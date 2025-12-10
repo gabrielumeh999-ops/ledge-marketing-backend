@@ -275,6 +275,90 @@ app.get('/api/email-history/:userId', async (req, res) => {
   }
 });
 
+// ============================================
+// WHOP WEBHOOK ENDPOINT (NEW)
+// ============================================
+app.post('/api/webhooks/whop', async (req, res) => {
+  try {
+    const event = req.body;
+    
+    console.log('🔔 Received Whop webhook:', event.type);
+
+    // Handle different webhook events
+    switch (event.type) {
+      case 'membership.created':
+        // New subscription - add user to database
+        console.log('✅ New membership created:', event.data.id);
+        
+        const newUser = {
+          user_id: event.data.id,
+          name: event.data.user?.username || event.data.user?.name || 'Customer',
+          email: event.data.user?.email || '',
+          product_name: event.data.product?.title || 'Ledge Marketing',
+          plan: event.data.plan?.title || 'Standard',
+          status: 'active',
+          join_date: new Date()
+        };
+        
+        await pool.query(
+          `INSERT INTO users (user_id, name, email, product_name, plan, status, join_date) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7) 
+           ON CONFLICT (user_id) DO UPDATE SET 
+           name = $2, email = $3, product_name = $4, plan = $5, status = $6`,
+          [newUser.user_id, newUser.name, newUser.email, newUser.product_name, newUser.plan, newUser.status, newUser.join_date]
+        );
+        
+        console.log('✅ User saved to database:', newUser.user_id);
+        break;
+
+      case 'membership.updated':
+        // Subscription updated (plan change, status change, etc.)
+        console.log('🔄 Membership updated:', event.data.id);
+        
+        await pool.query(
+          'UPDATE users SET plan = $1, status = $2 WHERE user_id = $3',
+          [event.data.plan?.title || 'Standard', event.data.status || 'active', event.data.id]
+        );
+        
+        console.log('✅ User updated in database:', event.data.id);
+        break;
+
+      case 'membership.deleted':
+      case 'membership.cancelled':
+        // Subscription canceled
+        console.log('❌ Membership canceled:', event.data.id);
+        
+        await pool.query(
+          'UPDATE users SET status = $1 WHERE user_id = $2',
+          ['canceled', event.data.id]
+        );
+        
+        console.log('✅ User status updated to canceled:', event.data.id);
+        break;
+
+      case 'payment.succeeded':
+        // Payment successful
+        console.log('💰 Payment succeeded for:', event.data.user_id);
+        break;
+
+      case 'payment.failed':
+        // Payment failed
+        console.log('⚠️ Payment failed for:', event.data.user_id);
+        break;
+
+      default:
+        console.log('ℹ️ Unhandled webhook type:', event.type);
+    }
+
+    // Always respond with 200 to acknowledge receipt
+    res.status(200).json({ received: true });
+  } catch (error) {
+    console.error('❌ Webhook processing error:', error);
+    // Still return 200 to prevent Whop from retrying
+    res.status(200).json({ received: true, error: error.message });
+  }
+});
+
 // Initialize database and start server
 initializeDatabase().then(() => {
   app.listen(PORT, () => {
@@ -283,5 +367,6 @@ initializeDatabase().then(() => {
     console.log(`✉️ Email Enabled: ${process.env.EMAIL_ENABLED}`);
     console.log(`📨 Resend API: ${process.env.RESEND_API_KEY ? 'Configured' : 'Not configured'}`);
     console.log(`🗄️ Database Connected: ${process.env.DATABASE_URL ? 'Yes' : 'No'}`);
+    console.log(`🔔 Webhook endpoint: /api/webhooks/whop`);
   });
 });
