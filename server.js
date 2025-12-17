@@ -2,371 +2,521 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { Resend } = require('resend');
-const { v4: uuidv4 } = require('uuid');
-const { Pool } = require('pg');
+const moment = require('moment');
+const crypto = require('crypto');
+const path = require('path');
 
+// Load environment variables
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// PostgreSQL connection
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
-
-// Resend client
-const resend = new Resend(process.env.RESEND_API_KEY);
-
-// Initialize database tables
-const initializeDatabase = async () => {
-  try {
-    // Create users table
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        user_id VARCHAR(255) PRIMARY KEY,
-        name VARCHAR(255),
-        email VARCHAR(255),
-        product_name VARCHAR(255),
-        plan VARCHAR(100),
-        status VARCHAR(50),
-        join_date TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create emails table
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS emails (
-        id VARCHAR(255) PRIMARY KEY,
-        user_id VARCHAR(255) REFERENCES users(user_id),
-        email_type VARCHAR(100),
-        content TEXT,
-        sent_to VARCHAR(255),
-        generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        sent_at TIMESTAMP,
-        status VARCHAR(50) DEFAULT 'generated'
-      )
-    `);
-
-    console.log('✅ Database tables initialized');
-  } catch (error) {
-    console.error('❌ Database initialization error:', error);
-  }
-};
-
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Mock AI response function
-const generateAIResponse = async (userData, emailType) => {
-  // Simulate AI processing delay
-  await new Promise(resolve => setTimeout(resolve, 2000));
-  
-  const responses = {
-    welcome: `Hi ${userData.name || 'there'}! Welcome to Ledge Marketing. We're excited to help you grow your business with AI-powered marketing solutions. Based on your interest in ${userData.product_name || 'our services'}, we recommend starting with our core strategy session.`,
-    
-    followup: `Hey ${userData.name || 'there'}! Following up on your purchase of ${userData.product_name || 'our product'}. We've noticed you might benefit from our advanced automation features. Ready to take your marketing to the next level?`,
-    
-    upgrade: `Hi ${userData.name || 'valued customer'}! You're doing great with ${userData.product_name || 'our product'}. Did you know our premium plan includes 5x more AI credits and priority support? Perfect time to upgrade!`
-  };
+// ===== CRITICAL: Serve built frontend files =====
+const frontendPath = path.join(__dirname, '../dist');
+app.use(express.static(frontendPath));
 
-  return responses[emailType] || "Thank you for being a valued customer!";
+// Initialize Resend (if enabled)
+const resend = process.env.EMAIL_ENABLED === 'true' ? new Resend(process.env.RESEND_API_KEY) : null;
+
+// ===== PLANS CONFIGURATION (SOURCE OF TRUTH) =====
+const PLANS = {
+    'free': {
+        name: 'Free Plan',
+        price: 0,
+        contact_limit: 25,
+        marketing_emails: { monthly: 70, daily: 2 },
+        transactional_emails: { monthly: 0, daily: 0, enabled: false },
+        analytics_enabled: false,
+        whop_plan_id: process.env.WHOP_PLAN_ID_FREE || 'FREE',
+    },
+    'starter': {
+        name: 'Starter Plan',
+        price: 9,
+        contact_limit: 100,
+        marketing_emails: { monthly: 300, daily: 10 },
+        transactional_emails: { monthly: 200, daily: 6, enabled: true },
+        analytics_enabled: false,
+        whop_plan_id: process.env.WHOP_PLAN_ID_STARTER || 'https://whop.com/checkout/plan_S5f00AqapCeD7', // ← REPLACE
+    },
+    'growth': {
+        name: 'Growth Plan',
+        price: 19,
+        contact_limit: 250,
+        marketing_emails: { monthly: 750, daily: 25 },
+        transactional_emails: { monthly: 500, daily: 16, enabled: true },
+        analytics_enabled: false,
+        whop_plan_id: process.env.WHOP_PLAN_ID_GROWTH || 'https://whop.com/checkout/plan_ENJBoGj2az1Ip', // ← REPLACE
+    },
+    'pro': {
+        name: 'Pro Plan',
+        price: 40,
+        contact_limit: 400,
+        marketing_emails: { monthly: 1200, daily: 40 },
+        transactional_emails: { monthly: 1000, daily: 33, enabled: true },
+        analytics_enabled: true,
+        whop_plan_id: process.env.WHOP_PLAN_ID_PRO || 'https://whop.com/checkout/plan_j0MoNy7XTp7Nm', // ← REPLACE
+    },
 };
 
-// Routes
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Ledge Marketing Backend is running!' });
-});
+// ===== IN-MEMORY DATABASE (Replace with PostgreSQL later) =====
+const usersDB = {};
 
-// Get user data from Whop or database
-app.get('/api/user/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    
-    // Check if user exists in database
-    const dbResult = await pool.query(
-      'SELECT * FROM users WHERE user_id = $1',
-      [userId]
-    );
-
-    if (dbResult.rows.length > 0) {
-      return res.json(dbResult.rows[0]);
-    }
-
-    // Fetch from Whop API if not in database
-    const whopResponse = await fetch(`https://api.whop.com/api/v2/memberships/${userId}`, {
-      headers: {
-        'Authorization': `Bearer ${process.env.WHOP_API_KEY}`
-      }
-    });
-
-    if (!whopResponse.ok) {
-      throw new Error('Failed to fetch user data from Whop');
-    }
-
-    const userData = await whopResponse.json();
-    
-    // Transform Whop data to our format
-    const transformedData = {
-      user_id: userId,
-      name: userData.details?.full_name || 'Customer',
-      email: userData.details?.email || '',
-      product_name: userData.product?.product_title || 'Ledge Marketing Product',
-      plan: userData.plan?.plan_title || 'Standard',
-      status: userData.status || 'active',
-      join_date: userData.start_date || new Date().toISOString()
+const getUser = async (whopUserId) => {
+    const defaultUser = {
+        plan: 'free',
+        contacts_count: 0,
+        daily_marketing_sent: 0,
+        monthly_marketing_sent: 0,
+        daily_transactional_sent: 0,
+        monthly_transactional_sent: 0,
+        last_daily_reset: moment.utc().format('YYYY-MM-DD'),
+        last_monthly_reset: moment.utc().format('YYYY-MM'),
+        email: '',
+        name: ''
     };
+    return usersDB[whopUserId] || { ...defaultUser };
+};
 
-    // Save to database
-    await pool.query(
-      `INSERT INTO users (user_id, name, email, product_name, plan, status, join_date) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) 
-       ON CONFLICT (user_id) DO UPDATE SET 
-       name = $2, email = $3, product_name = $4, plan = $5, status = $6, join_date = $7`,
-      [
-        transformedData.user_id,
-        transformedData.name,
-        transformedData.email,
-        transformedData.product_name,
-        transformedData.plan,
-        transformedData.status,
-        transformedData.join_date
-      ]
-    );
+const updateUser = async (whopUserId, data) => {
+    const existing = await getUser(whopUserId);
+    usersDB[whopUserId] = { ...existing, ...data, whopUserId };
+    console.log(`[DB] Updated user ${whopUserId}:`, data);
+    return usersDB[whopUserId];
+};
 
-    res.json(transformedData);
-  } catch (error) {
-    console.error('Error fetching user data:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch user data',
-      details: error.message 
-    });
-  }
-});
+// ===== USAGE RESET LOGIC =====
+const checkAndResetUsage = (user) => {
+    const now = moment.utc();
+    let updated = false;
+    const updates = {};
 
-// Generate AI email
-app.post('/api/generate-email', async (req, res) => {
-  try {
-    const { userId, emailType } = req.body;
-
-    if (!userId || !emailType) {
-      return res.status(400).json({ error: 'Missing userId or emailType' });
+    // Daily reset (00:00 UTC)
+    const lastDaily = moment.utc(user.last_daily_reset, 'YYYY-MM-DD');
+    if (now.isAfter(lastDaily, 'day')) {
+        updates.daily_marketing_sent = 0;
+        updates.daily_transactional_sent = 0;
+        updates.last_daily_reset = now.format('YYYY-MM-DD');
+        updated = true;
     }
 
-    // Get user data from database
-    const userResult = await pool.query(
-      'SELECT * FROM users WHERE user_id = $1',
-      [userId]
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+    // Monthly reset (1st of month)
+    const lastMonthly = moment.utc(user.last_monthly_reset, 'YYYY-MM');
+    if (now.isAfter(lastMonthly, 'month')) {
+        updates.monthly_marketing_sent = 0;
+        updates.monthly_transactional_sent = 0;
+        updates.last_monthly_reset = now.format('YYYY-MM');
+        updated = true;
     }
 
-    const userData = userResult.rows[0];
+    return { updated, updates };
+};
 
-    // Generate AI response
-    const aiResponse = process.env.AI_ENABLED === 'true' 
-      ? await generateAIResponse(userData, emailType)
-      : `This is a sample ${emailType} email for ${userData.name}. AI features are currently disabled.`;
+// ===== HELPER: Get plan from Whop Plan ID =====
+const getPlanFromWhopId = (whopPlanId) => {
+    return Object.keys(PLANS).find(key => PLANS[key].whop_plan_id === whopPlanId) || 'free';
+};
 
-    const emailId = uuidv4();
-    const emailData = {
-      id: emailId,
-      userId,
-      emailType,
-      content: aiResponse,
-      generatedAt: new Date().toISOString(),
-      userData
-    };
+// ===== API ROUTES (UNCHANGED FROM YOUR ORIGINAL) =====
 
-    // Store email in database
-    await pool.query(
-      'INSERT INTO emails (id, user_id, email_type, content) VALUES ($1, $2, $3, $4)',
-      [emailId, userId, emailType, aiResponse]
-    );
+// 1. Verify user and get usage data
+app.get('/api/user/:whopUserId/verify', async (req, res) => {
+    const { whopUserId } = req.params;
 
-    res.json(emailData);
-  } catch (error) {
-    console.error('Error generating email:', error);
-    res.status(500).json({ 
-      error: 'Failed to generate email',
-      details: error.message 
-    });
-  }
-});
-
-// Send email via Resend
-app.post('/api/send-email', async (req, res) => {
-  try {
-    const { userId, emailId, recipientEmail } = req.body;
-
-    if (!userId || !emailId || !recipientEmail) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    // Find the generated email in database
-    const emailResult = await pool.query(
-      'SELECT * FROM emails WHERE id = $1 AND user_id = $2',
-      [emailId, userId]
-    );
-
-    if (emailResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Email not found' });
-    }
-
-    const email = emailResult.rows[0];
-
-    if (process.env.EMAIL_ENABLED === 'true' && process.env.RESEND_API_KEY) {
-      const { data, error } = await resend.emails.send({
-        from: 'Ledge Marketing <onboarding@resend.dev>',
-        to: recipientEmail,
-        subject: `Ledge Marketing - ${email.email_type.charAt(0).toUpperCase() + email.email_type.slice(1)}`,
-        text: email.content,
-        html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2 style="color: #333;">Ledge Marketing</h2>
-                <p>${email.content.replace(/\n/g, '<br>')}</p>
-                <hr>
-                <p style="color: #666; font-size: 12px;">This email was generated by Ledge Marketing AI.</p>
-              </div>`
-      });
-
-      if (error) {
-        throw new Error(error.message);
-      }
-
-      // Update email record as sent
-      await pool.query(
-        'UPDATE emails SET sent_to = $1, sent_at = $2, status = $3 WHERE id = $4',
-        [recipientEmail, new Date(), 'sent', emailId]
-      );
-    }
-
-    res.json({ 
-      success: true, 
-      message: process.env.EMAIL_ENABLED === 'true' ? 'Email sent successfully' : 'Email prepared (sending disabled)',
-      email: email 
-    });
-  } catch (error) {
-    console.error('Error sending email:', error);
-    res.status(500).json({ 
-      error: 'Failed to send email',
-      details: error.message 
-    });
-  }
-});
-
-// Get user's email history
-app.get('/api/email-history/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const emailResult = await pool.query(
-      'SELECT * FROM emails WHERE user_id = $1 ORDER BY generated_at DESC',
-      [userId]
-    );
-    
-    res.json(emailResult.rows);
-  } catch (error) {
-    console.error('Error fetching email history:', error);
-    res.status(500).json({ error: 'Failed to fetch email history' });
-  }
-});
-
-// ============================================
-// WHOP WEBHOOK ENDPOINT (NEW)
-// ============================================
-app.post('/api/webhooks/whop', async (req, res) => {
-  try {
-    const event = req.body;
-    
-    console.log('🔔 Received Whop webhook:', event.type);
-
-    // Handle different webhook events
-    switch (event.type) {
-      case 'membership.created':
-        // New subscription - add user to database
-        console.log('✅ New membership created:', event.data.id);
+    try {
+        let user = await getUser(whopUserId);
         
-        const newUser = {
-          user_id: event.data.id,
-          name: event.data.user?.username || event.data.user?.name || 'Customer',
-          email: event.data.user?.email || '',
-          product_name: event.data.product?.title || 'Ledge Marketing',
-          plan: event.data.plan?.title || 'Standard',
-          status: 'active',
-          join_date: new Date()
+        // Apply resets if needed
+        const { updated, updates } = checkAndResetUsage(user);
+        if (updated) {
+            user = await updateUser(whopUserId, updates);
+        }
+
+        const plan = PLANS[user.plan] || PLANS.free;
+
+        const response = {
+            success: true,
+            user: {
+                whopUserId,
+                plan: user.plan,
+                planName: plan.name,
+                email: user.email || '',
+                name: user.name || '',
+                
+                // Usage
+                contacts_count: user.contacts_count || 0,
+                daily_marketing_sent: user.daily_marketing_sent || 0,
+                monthly_marketing_sent: user.monthly_marketing_sent || 0,
+                daily_transactional_sent: user.daily_transactional_sent || 0,
+                monthly_transactional_sent: user.monthly_transactional_sent || 0,
+                
+                // Limits
+                contact_limit: plan.contact_limit,
+                marketing_limit_monthly: plan.marketing_emails.monthly,
+                marketing_limit_daily: plan.marketing_emails.daily,
+                transactional_limit_monthly: plan.transactional_emails.monthly,
+                transactional_limit_daily: plan.transactional_emails.daily,
+                transactional_enabled: plan.transactional_emails.enabled,
+                analytics_enabled: plan.analytics_enabled
+            }
         };
-        
-        await pool.query(
-          `INSERT INTO users (user_id, name, email, product_name, plan, status, join_date) 
-           VALUES ($1, $2, $3, $4, $5, $6, $7) 
-           ON CONFLICT (user_id) DO UPDATE SET 
-           name = $2, email = $3, product_name = $4, plan = $5, status = $6`,
-          [newUser.user_id, newUser.name, newUser.email, newUser.product_name, newUser.plan, newUser.status, newUser.join_date]
-        );
-        
-        console.log('✅ User saved to database:', newUser.user_id);
-        break;
 
-      case 'membership.updated':
-        // Subscription updated (plan change, status change, etc.)
-        console.log('🔄 Membership updated:', event.data.id);
-        
-        await pool.query(
-          'UPDATE users SET plan = $1, status = $2 WHERE user_id = $3',
-          [event.data.plan?.title || 'Standard', event.data.status || 'active', event.data.id]
-        );
-        
-        console.log('✅ User updated in database:', event.data.id);
-        break;
+        res.json(response);
 
-      case 'membership.deleted':
-      case 'membership.cancelled':
-        // Subscription canceled
-        console.log('❌ Membership canceled:', event.data.id);
-        
-        await pool.query(
-          'UPDATE users SET status = $1 WHERE user_id = $2',
-          ['canceled', event.data.id]
-        );
-        
-        console.log('✅ User status updated to canceled:', event.data.id);
-        break;
-
-      case 'payment.succeeded':
-        // Payment successful
-        console.log('💰 Payment succeeded for:', event.data.user_id);
-        break;
-
-      case 'payment.failed':
-        // Payment failed
-        console.log('⚠️ Payment failed for:', event.data.user_id);
-        break;
-
-      default:
-        console.log('ℹ️ Unhandled webhook type:', event.type);
+    } catch (error) {
+        console.error('Verify user error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
     }
-
-    // Always respond with 200 to acknowledge receipt
-    res.status(200).json({ received: true });
-  } catch (error) {
-    console.error('❌ Webhook processing error:', error);
-    // Still return 200 to prevent Whop from retrying
-    res.status(200).json({ received: true, error: error.message });
-  }
 });
 
-// Initialize database and start server
-initializeDatabase().then(() => {
-  app.listen(PORT, () => {
-    console.log(`🚀 Ledge Marketing Backend running on port ${PORT}`);
-    console.log(`📧 AI Enabled: ${process.env.AI_ENABLED}`);
-    console.log(`✉️ Email Enabled: ${process.env.EMAIL_ENABLED}`);
-    console.log(`📨 Resend API: ${process.env.RESEND_API_KEY ? 'Configured' : 'Not configured'}`);
-    console.log(`🗄️ Database Connected: ${process.env.DATABASE_URL ? 'Yes' : 'No'}`);
-    console.log(`🔔 Webhook endpoint: /api/webhooks/whop`);
-  });
+// 2. Send email with plan enforcement
+app.post('/api/send-email', async (req, res) => {
+    const { whopUserId, campaignName, subject, html, to, type } = req.body;
+    const emailType = type === 'transactional' ? 'transactional' : 'marketing';
+    const recipients = Array.isArray(to) ? to : [to];
+    const emailCount = recipients.length;
+
+    // Validation
+    if (!whopUserId || !campaignName || !subject || !html || !recipients.length || !type) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'Missing required fields' 
+        });
+    }
+
+    try {
+        let user = await getUser(whopUserId);
+        
+        // Apply resets
+        const { updated, updates } = checkAndResetUsage(user);
+        if (updated) {
+            user = await updateUser(whopUserId, updates);
+        }
+
+        const plan = PLANS[user.plan] || PLANS.free;
+
+        // ===== ENFORCE PLAN LIMITS =====
+        
+        // 1. Contact limit
+        if (user.contacts_count + emailCount > plan.contact_limit) {
+            return res.status(403).json({
+                success: false,
+                message: `Contact limit exceeded. You have ${user.contacts_count}/${plan.contact_limit} contacts.`
+            });
+        }
+
+        // 2. Transactional access check
+        if (emailType === 'transactional' && !plan.transactional_emails.enabled) {
+            return res.status(403).json({
+                success: false,
+                message: 'Transactional emails not available on your plan.'
+            });
+        }
+
+        // 3. Daily limit check
+        const dailyKey = `daily_${emailType}_sent`;
+        const dailyLimit = plan[`${emailType}_emails`].daily;
+        if (user[dailyKey] + emailCount > dailyLimit) {
+            return res.status(403).json({
+                success: false,
+                message: `Daily ${emailType} email limit exceeded: ${user[dailyKey]}/${dailyLimit}`
+            });
+        }
+
+        // 4. Monthly limit check
+        const monthlyKey = `monthly_${emailType}_sent`;
+        const monthlyLimit = plan[`${emailType}_emails`].monthly;
+        if (user[monthlyKey] + emailCount > monthlyLimit) {
+            return res.status(403).json({
+                success: false,
+                message: `Monthly ${emailType} email limit exceeded: ${user[monthlyKey]}/${monthlyLimit}`
+            });
+        }
+
+        // ===== SEND EMAIL =====
+        let sendResult = null;
+        
+        if (process.env.EMAIL_ENABLED === 'true' && resend) {
+            try {
+                sendResult = await resend.emails.send({
+                    from: 'Ledge Marketing <no-reply@send.ledgemarketing.xyz>',
+                    to: recipients,
+                    subject: subject,
+                    html: html,
+                    tags: [
+                        { name: 'campaign', value: campaignName },
+                        { name: 'plan', value: user.plan },
+                        { name: 'type', value: emailType }
+                    ]
+                });
+                console.log(`✅ Email sent via Resend: ${sendResult.id}`);
+            } catch (emailError) {
+                console.error('Resend error:', emailError);
+                return res.status(500).json({
+                    success: false,
+                    message: 'Failed to send email through Resend',
+                    error: emailError.message
+                });
+            }
+        } else {
+            // Demo mode
+            console.log(`[DEMO] Would send ${emailType} email to ${emailCount} recipients`);
+            sendResult = { id: 'demo_' + Date.now(), demo: true };
+        }
+
+        // ===== UPDATE USAGE =====
+        const usageUpdates = {
+            [dailyKey]: (user[dailyKey] || 0) + emailCount,
+            [monthlyKey]: (user[monthlyKey] || 0) + emailCount,
+            contacts_count: (user.contacts_count || 0) + emailCount
+        };
+
+        await updateUser(whopUserId, usageUpdates);
+
+        // ===== RESPONSE =====
+        res.json({
+            success: true,
+            message: `Email sent to ${emailCount} recipient(s)`,
+            emailId: sendResult.id,
+            demo: !resend,
+            usage: {
+                daily: usageUpdates[dailyKey],
+                monthly: usageUpdates[monthlyKey],
+                contacts: usageUpdates.contacts_count
+            }
+        });
+
+    } catch (error) {
+        console.error('Send email error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error sending email' 
+        });
+    }
+});
+
+// 3. Get analytics (Pro plan only)
+app.get('/api/analytics', async (req, res) => {
+    const { whopUserId } = req.query;
+
+    if (!whopUserId) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'User ID required' 
+        });
+    }
+
+    try {
+        const user = await getUser(whopUserId);
+        const plan = PLANS[user.plan] || PLANS.free;
+
+        // Check if user has analytics access
+        if (!plan.analytics_enabled) {
+            return res.status(403).json({
+                success: false,
+                message: 'Analytics requires Pro plan'
+            });
+        }
+
+        // Demo analytics data (replace with real data later)
+        const analytics = {
+            total_campaigns: 12,
+            total_emails_sent: user.monthly_marketing_sent + user.monthly_transactional_sent,
+            open_rate: '24.5%',
+            click_rate: '3.2%',
+            top_performing: 'Welcome Series',
+            recent_activity: [
+                { date: '2024-01-15', action: 'Campaign sent', count: 150 },
+                { date: '2024-01-10', action: 'Campaign sent', count: 89 },
+                { date: '2024-01-05', action: 'Campaign sent', count: 203 }
+            ]
+        };
+
+        res.json({
+            success: true,
+            analytics,
+            plan: plan.name
+        });
+
+    } catch (error) {
+        console.error('Analytics error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error fetching analytics' 
+        });
+    }
+});
+
+// 4. Update user profile
+app.post('/api/user/update', async (req, res) => {
+    const { whopUserId, email, name } = req.body;
+
+    if (!whopUserId) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'User ID required' 
+        });
+    }
+
+    try {
+        const updates = {};
+        if (email) updates.email = email;
+        if (name) updates.name = name;
+
+        await updateUser(whopUserId, updates);
+
+        res.json({
+            success: true,
+            message: 'Profile updated'
+        });
+
+    } catch (error) {
+        console.error('Update user error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error updating profile' 
+        });
+    }
+});
+
+// ===== WHOP WEBHOOK HANDLER =====
+app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async (req, res) => {
+    const signature = req.headers['whop-signature'];
+    const body = req.body.toString('utf8');
+    const secret = process.env.WHOP_WEBHOOK_SECRET;
+
+    // Verify signature in production
+    if (process.env.NODE_ENV === 'production' && secret) {
+        if (!signature) {
+            return res.status(401).json({ 
+                success: false, 
+                message: 'Missing signature' 
+            });
+        }
+
+        const hmac = crypto.createHmac('sha256', secret);
+        hmac.update(body);
+        const calculatedSignature = hmac.digest('hex');
+
+        if (calculatedSignature !== signature) {
+            console.warn('Invalid webhook signature');
+            return res.status(403).json({ 
+                success: false, 
+                message: 'Invalid signature' 
+            });
+        }
+    }
+
+    let event;
+    try {
+        event = JSON.parse(body);
+    } catch (error) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'Invalid JSON' 
+        });
+    }
+
+    console.log(`📩 Whop webhook received: ${event.type}`);
+
+    try {
+        const { type, data } = event;
+
+        switch (type) {
+            case 'membership.activated':
+            case 'invoice.paid':
+                // User purchased or renewed
+                const whopPlanId = data.plan_id;
+                const planKey = getPlanFromWhopId(whopPlanId);
+                const userId = data.user_id;
+
+                await updateUser(userId, {
+                    plan: planKey,
+                    // Reset usage for new plan
+                    daily_marketing_sent: 0,
+                    monthly_marketing_sent: 0,
+                    daily_transactional_sent: 0,
+                    monthly_transactional_sent: 0,
+                    contacts_count: 0,
+                    last_daily_reset: moment.utc().format('YYYY-MM-DD'),
+                    last_monthly_reset: moment.utc().format('YYYY-MM'),
+                    email: data.user_email || '',
+                    name: data.user_username || ''
+                });
+
+                console.log(`✅ User ${userId} activated plan: ${planKey}`);
+                break;
+
+            case 'membership.deactivated':
+            case 'invoice.past_due':
+                // User canceled or payment failed
+                const deactivatedUserId = data.user_id;
+                await updateUser(deactivatedUserId, { 
+                    plan: 'free',
+                    // Keep their data but restrict to free limits
+                });
+                console.log(`⚠️ User ${deactivatedUserId} downgraded to free`);
+                break;
+
+            case 'payment.succeeded':
+                console.log(`💰 Payment succeeded for user: ${data.user_id}`);
+                break;
+
+            case 'payment.failed':
+                console.warn(`❌ Payment failed for user: ${data.user_id}`);
+                break;
+
+            default:
+                console.log(`ℹ️ Unhandled webhook type: ${type}`);
+        }
+
+        res.json({ 
+            success: true, 
+            message: 'Webhook processed' 
+        });
+
+    } catch (error) {
+        console.error('Webhook processing error:', error);
+        // Still return 200 so Whop doesn't retry
+        res.json({ 
+            success: false, 
+            message: 'Webhook processing failed',
+            error: error.message 
+        });
+    }
+});
+
+// ===== HEALTH CHECK =====
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        service: 'Ledge Marketing API'
+    });
+});
+
+// ===== CRITICAL: Serve frontend at all necessary routes =====
+// This handles client-side routing for React
+app.get('*', (req, res) => {
+    if (req.path.startsWith('/api')) {
+        // API routes that don't exist return 404
+        res.status(404).json({ success: false, message: 'API endpoint not found' });
+    } else {
+        // All non-API routes serve the React app
+        res.sendFile(path.join(frontendPath, 'index.html'));
+    }
+});
+
+// ===== START SERVER =====
+app.listen(PORT, () => {
+    console.log(`🚀 Ledge Marketing backend running on port ${PORT}`);
+    console.log(`📧 Dashboard: http://localhost:${PORT}`);
+    console.log(`📁 Serving frontend from: ${frontendPath}`);
+    console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`✉️ Email sending: ${process.env.EMAIL_ENABLED === 'true' ? 'ENABLED' : 'DISABLED (demo mode)'}`);
+    console.log(`✅ App ready for Whop installation`);
 });

@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ledge Marketing Dashboard</title>
+    <!-- WHOP SDK - ADDED THIS LINE -->
+    <script src="https://unpkg.com/@whop-apps/sdk@latest"></script>
+    <link rel="stylesheet" href="app.css">
+    <style>
+        /* Whop-specific styles */
+        .whop-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 2rem;
+            background: rgba(13, 40, 24, 0.95);
+            border-bottom: 1px solid #2D4A3A;
+        }
+        
+        .whop-user-info {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+        
+        .whop-plan-badge {
+            background: linear-gradient(135deg, #1c422c 0%, #3a1c1c 100%);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.875rem;
+        }
+        
+        .whop-user-email {
+            color: #9CA3AF;
+            font-size: 0.9rem;
+        }
+        
+        .whop-upgrade-btn {
+            background: transparent;
+            border: 1px solid #2D4A3A;
+            color: #A7F3D0;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        
+        .whop-upgrade-btn:hover {
+            background: rgba(167, 243, 208, 0.1);
+        }
+        
+        .app-container {
+            min-height: 100vh;
+            background: #0D2818;
+        }
+        
+        /* Loading state */
+        .loading-screen {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #9CA3AF;
+        }
+        
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(167, 243, 208, 0.3);
+            border-radius: 50%;
+            border-top-color: #A7F3D0;
+            animation: spin 1s ease-in-out infinite;
+            margin-bottom: 1rem;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Modal overlay fix */
+        .modal {
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(13, 40, 24, 0.95);
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: linear-gradient(135deg, #143522 0%, #1c3828 100%);
+            border: 1px solid #2D4A3A;
+            border-radius: 16px;
+            padding: 2.5rem;
+            width: 90%;
+            max-width: 600px;
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .modal-content.large-modal {
+            max-width: 800px;
+        }
+
+        .close {
+            color: #9CA3AF;
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+            font-size: 1.75rem;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 1;
+            transition: color 0.3s ease;
+        }
+
+        .close:hover {
+            color: #F5F5F5;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loadingScreen" class="loading-screen">
+        <div class="loading-spinner"></div>
+        <p>Loading Ledge Marketing...</p>
+    </div>
+    
+    <!-- Main App (hidden until loaded) -->
+    <div id="appContainer" class="app-container" style="display: none;">
+        <!-- Whop Header -->
+        <div class="whop-header">
+            <div class="nav-brand">
+                <span class="icon">📧</span>
+                <h1>Ledge Marketing Dashboard</h1>
+            </div>
+            
+            <div class="whop-user-info">
+                <span id="userPlanBadge" class="whop-plan-badge">Loading...</span>
+                <span id="userEmail" class="whop-user-email">user@example.com</span>
+                <button id="upgradeButton" class="whop-upgrade-btn" style="display: none;">
+                    Upgrade Plan
+                </button>
+                <button id="logoutButton" class="cta-button small">
+                    Logout
+                </button>
+            </div>
+        </div>
+
+        <!-- Dashboard Content -->
+        <main class="dashboard-main">
+            <h2 class="welcome-text">Welcome back, <span id="userName">User</span></h2>
+            
+            <!-- Stats Grid -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon">📈</div>
+                    <div class="stat-content">
+                        <div class="stat-number"><span id="marketingEmailsSent">0</span> / <span id="marketingEmailLimit">0</span></div>
+                        <div class="stat-label">Marketing Emails Sent (Monthly)</div>
+                        <p class="stat-detail"><span id="marketingEmailsSentDaily">0</span> / <span id="marketingEmailLimitDaily">0</span> Daily</p>
+                    </div>
+                </div>
+
+                <div class="stat-card" id="transactionalEmailCard" style="display: none;">
+                    <div class="stat-icon">🔗</div>
+                    <div class="stat-content">
+                        <div class="stat-number"><span id="transactionalEmailsSent">0</span> / <span id="transactionalEmailLimit">0</span></div>
+                        <div class="stat-label">Transactional Emails Sent (Monthly)</div>
+                        <p class="stat-detail"><span id="transactionalEmailsSentDaily">0</span> / <span id="transactionalEmailLimitDaily">0</span> Daily</p>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-icon">👥</div>
+                    <div class="stat-content">
+                        <div class="stat-number"><span id="contactsCount">0</span> / <span id="contactLimit">0</span></div>
+                        <div class="stat-label">Total Contacts Used</div>
+                        <p class="stat-detail">Max audience size</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action Cards -->
+            <div class="action-cards">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Create Email Campaign</h3>
+                    </div>
+                    <div class="card-body">
+                        <p>Send marketing or transactional emails to your audience.</p>
+                        <button class="cta-button full-width" id="createCampaignBtn">
+                            Create New Campaign
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="card" id="analyticsCard" style="display: none;">
+                    <div class="card-header">
+                        <h3 class="card-title">Analytics Dashboard</h3>
+                    </div>
+                    <div class="card-body">
+                        <p>Track campaign performance with detailed analytics.</p>
+                        <div class="analytics-preview">
+                            <li>Total Opens: <span id="analyticsOpens">-</span></li>
+                            <li>Total Clicks: <span id="analyticsClicks">-</span></li>
+                        </div>
+                        <button class="cta-button secondary full-width" id="viewAnalyticsBtn">
+                            View Analytics
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Manage Contacts</h3>
+                    </div>
+                    <div class="card-body">
+                        <p>Import and segment your email contacts.</p>
+                        <button class="cta-button secondary full-width" id="manageContactsBtn">
+                            Manage Contacts
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Campaign History -->
+            <section class="campaign-history">
+                <div class="campaign-history-header">
+                    <h3 class="gradient-text">Recent Campaigns</h3>
+                    <button class="cta-button small" id="viewAllCampaignsBtn">
+                        View All
+                    </button>
+                </div>
+                <div class="history-list" id="campaignHistoryList">
+                    <div class="empty-state">
+                        <p>No campaigns sent yet. Create your first campaign!</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+        
+        <!-- Email Modal -->
+        <div id="emailModal" class="modal">
+            <div class="modal-content">
+                <span class="close" id="closeEmailModal">&times;</span>
+                <h2 class="gradient-text">Create New Email Campaign</h2>
+                
+                <div class="form-group">
+                    <label for="emailTypeSelect">Email Type</label>
+                    <select id="emailTypeSelect" class="form-control full-width">
+                        <option value="marketing">Marketing (Promotional, Newsletters)</option>
+                        <option value="transactional">Transactional (Receipts, Notifications)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="campaignNameInput">Campaign Name</label>
+                    <input type="text" id="campaignNameInput" class="form-control full-width" placeholder="e.g., Welcome Series">
+                </div>
+
+                <div class="form-group">
+                    <label for="subjectInput">Subject Line</label>
+                    <input type="text" id="subjectInput" class="form-control full-width" placeholder="Enter subject line">
+                </div>
+
+                <div class="form-group">
+                    <label for="htmlInput">Email Content</label>
+                    <textarea id="htmlInput" class="form-control full-width" rows="8" placeholder="Enter HTML content or plain text...">&lt;h1&gt;Hello!&lt;/h1&gt;&lt;p&gt;This is your email content.&lt;/p&gt;</textarea>
+                    <small>Basic HTML is supported. For advanced templates, use our editor.</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="recipientInput">Recipient(s)</label>
+                    <input type="text" id="recipientInput" class="form-control full-width" placeholder="email@example.com, email2@example.com">
+                    <small>Separate multiple emails with commas</small>
+                </div>
+
+                <div class="campaign-actions">
+                    <button class="secondary-button" id="saveDraftBtn">Save as Draft</button>
+                    <button class="cta-button" id="sendCampaignBtn">Send Campaign Now</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Contacts Modal -->
+        <div id="contactsModal" class="modal">
+            <div class="modal-content large-modal">
+                <span class="close" id="closeContactsModal">&times;</span>
+                <h2 class="gradient-text">Manage Contacts</h2>
+                
+                <div class="contacts-manager">
+                    <div class="contacts-actions">
+                        <button class="cta-button" id="importContactsBtn">Import CSV</button>
+                        <button class="cta-button" id="addContactBtn">Add Contact</button>
+                        <button class="cta-button secondary" id="exportContactsBtn">Export</button>
+                    </div>
+                    
+                    <div class="contacts-list">
+                        <h4>Your Contacts (<span id="contactsCountModal">0</span>)</h4>
+                        <div class="contacts-table" id="contactsTable">
+                            <div class="empty-state">
+                                <p>No contacts yet. Import your contact list!</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Upgrade Modal -->
+        <div id="upgradeModal" class="modal">
+            <div class="modal-content">
+                <span class="close" id="closeUpgradeModal">&times;</span>
+                <h2 class="gradient-text">Upgrade Your Plan</h2>
+                
+                <div class="upgrade-plans" id="upgradePlansContainer">
+                    <!-- Plans loaded by JavaScript -->
+                </div>
+                
+                <div class="whop-callout">
+                    <p>Upgrading is handled through Whop. You'll be redirected to complete the upgrade.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="dashboard.js"></script>
+</body>
+</html>
