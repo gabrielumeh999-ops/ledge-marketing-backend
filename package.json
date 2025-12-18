@@ -10,7 +10,7 @@
       "build": "vite build",
       "preview": "vite preview",
       "render-build": "npm install && npm run build && cd Backend && npm install --omit=dev",
-      "start": "cd Backend && node server.js"
+      "start": "node Backend/server.js"
     },
     "dependencies": {
       "react": "^18.2.0",
