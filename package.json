@@ -2,12 +2,17 @@
   "name": "ledge-marketing",
   "version": "1.0.0",
   "description": "Email marketing SaaS for Whop",
+  "main": "Backend/server.js",
   "scripts": {
-    "start": "node Backend/server.js",
-    "heroku-postbuild": "cd Backend && npm install && cd ../frontend && npm install && npm run build"
+    "start": "cd Backend && npm install && cd .. && node Backend/server.js",
+    "build": "cd frontend && npm install && npm run build",
+    "render-build": "cd Backend && npm install && cd ../frontend && npm install && npm run build"
   },
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=9.0.0"
-  }
+  },
+  "keywords": ["whop", "email", "marketing", "saas"],
+  "author": "",
+  "license": "ISC"
 }
