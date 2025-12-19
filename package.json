@@ -2,20 +2,10 @@
   "name": "ledge-marketing",
   "version": "1.0.0",
   "description": "Email marketing SaaS for Whop",
-  "main": "server.js",
   "scripts": {
-    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
-    "dev:frontend": "cd frontend && vite",
-    "dev:backend": "cd Backend && nodemon server.js",
-    "build": "cd frontend && npm install && vite build",
     "start": "node Backend/server.js",
-    "install:all": "npm install && cd Backend && npm install && cd ../frontend && npm install",
-    "render-build": "npm run build && cd Backend && npm install --omit=dev"
+    "heroku-postbuild": "cd Backend && npm install && cd ../frontend && npm install && npm run build"
   },
-  "dependencies": {
-    "concurrently": "^8.2.2"
-  },
-  "devDependencies": {},
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=9.0.0"
