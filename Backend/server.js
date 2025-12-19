@@ -1,38 +1,78 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const { Resend } = require('resend');
 const moment = require('moment');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
 // Load environment variables
-dotenv.config();
+dotenv.config({ path: path.join(__dirname, '../.env') });
+dotenv.config(); // Also try local .env
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// ===== ENVIRONMENT VALIDATION =====
+console.log('🔧 Environment Check:');
+console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
+console.log('- PORT:', PORT);
+console.log('- EMAIL_ENABLED:', process.env.EMAIL_ENABLED);
+console.log('- RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✓ Set' : '✗ Missing');
+
+// Initialize Resend only if enabled and key exists
+let resend = null;
+let Resend = null;
+
+if (process.env.EMAIL_ENABLED === 'true') {
+    if (!process.env.RESEND_API_KEY) {
+        console.warn('⚠️  EMAIL_ENABLED is true but RESEND_API_KEY is missing. Running in demo mode.');
+    } else {
+        try {
+            Resend = require('resend').Resend;
+            resend = new Resend(process.env.RESEND_API_KEY);
+            console.log('✅ Resend initialized');
+        } catch (error) {
+            console.error('❌ Failed to initialize Resend:', error.message);
+            console.log('📧 Falling back to demo mode');
+        }
+    }
+} else {
+    console.log('📧 Email sending disabled (demo mode)');
+}
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// ===== CRITICAL: Serve built frontend files =====
-// Corrected path - looks for frontend/dist from Backend folder
-const frontendPath = path.join(__dirname, '../frontend/dist');
-console.log('📁 Frontend path:', frontendPath);
-console.log('📁 Frontend exists:', fs.existsSync(frontendPath));
+// ===== FRONTEND STATIC FILES =====
+// Try multiple possible paths for frontend dist
+const possibleFrontendPaths = [
+    path.join(__dirname, '../frontend/dist'),
+    path.join(__dirname, '../../frontend/dist'),
+    path.join(__dirname, 'frontend/dist'),
+    path.join(process.cwd(), 'frontend/dist')
+];
 
-// Only serve static files if the dist folder exists
-if (fs.existsSync(frontendPath)) {
+let frontendPath = null;
+for (const testPath of possibleFrontendPaths) {
+    if (fs.existsSync(testPath)) {
+        frontendPath = testPath;
+        break;
+    }
+}
+
+console.log('📁 Frontend path search:');
+possibleFrontendPaths.forEach(p => {
+    console.log(`  - ${p}: ${fs.existsSync(p) ? '✓ Found' : '✗ Not found'}`);
+});
+
+if (frontendPath) {
     app.use(express.static(frontendPath));
     console.log('✅ Serving frontend from:', frontendPath);
 } else {
-    console.warn('⚠️ Frontend dist folder not found. Run "npm run build" first.');
+    console.warn('⚠️  Frontend dist folder not found. API-only mode.');
 }
-
-// Initialize Resend (if enabled)
-const resend = process.env.EMAIL_ENABLED === 'true' ? new Resend(process.env.RESEND_API_KEY) : null;
 
 // ===== PLANS CONFIGURATION (SOURCE OF TRUTH) =====
 const PLANS = {
@@ -74,10 +114,15 @@ const PLANS = {
     },
 };
 
-// ===== IN-MEMORY DATABASE (Replace with PostgreSQL later) =====
+// ===== IN-MEMORY DATABASE =====
 const usersDB = {};
 
 const getUser = async (whopUserId) => {
+    if (!whopUserId) {
+        console.warn('⚠️  getUser called with empty whopUserId');
+        return null;
+    }
+
     const defaultUser = {
         plan: 'free',
         contacts_count: 0,
@@ -94,34 +139,45 @@ const getUser = async (whopUserId) => {
 };
 
 const updateUser = async (whopUserId, data) => {
+    if (!whopUserId) {
+        console.warn('⚠️  updateUser called with empty whopUserId');
+        return null;
+    }
+
     const existing = await getUser(whopUserId);
     usersDB[whopUserId] = { ...existing, ...data, whopUserId };
-    console.log(`[DB] Updated user ${whopUserId}:`, data);
+    console.log(`[DB] Updated user ${whopUserId}:`, Object.keys(data).join(', '));
     return usersDB[whopUserId];
 };
 
 // ===== USAGE RESET LOGIC =====
 const checkAndResetUsage = (user) => {
+    if (!user) return { updated: false, updates: {} };
+
     const now = moment.utc();
     let updated = false;
     const updates = {};
 
-    // Daily reset (00:00 UTC)
-    const lastDaily = moment.utc(user.last_daily_reset, 'YYYY-MM-DD');
-    if (now.isAfter(lastDaily, 'day')) {
-        updates.daily_marketing_sent = 0;
-        updates.daily_transactional_sent = 0;
-        updates.last_daily_reset = now.format('YYYY-MM-DD');
-        updated = true;
-    }
+    try {
+        // Daily reset (00:00 UTC)
+        const lastDaily = moment.utc(user.last_daily_reset, 'YYYY-MM-DD');
+        if (now.isAfter(lastDaily, 'day')) {
+            updates.daily_marketing_sent = 0;
+            updates.daily_transactional_sent = 0;
+            updates.last_daily_reset = now.format('YYYY-MM-DD');
+            updated = true;
+        }
 
-    // Monthly reset (1st of month)
-    const lastMonthly = moment.utc(user.last_monthly_reset, 'YYYY-MM');
-    if (now.isAfter(lastMonthly, 'month')) {
-        updates.monthly_marketing_sent = 0;
-        updates.monthly_transactional_sent = 0;
-        updates.last_monthly_reset = now.format('YYYY-MM');
-        updated = true;
+        // Monthly reset (1st of month)
+        const lastMonthly = moment.utc(user.last_monthly_reset, 'YYYY-MM');
+        if (now.isAfter(lastMonthly, 'month')) {
+            updates.monthly_marketing_sent = 0;
+            updates.monthly_transactional_sent = 0;
+            updates.last_monthly_reset = now.format('YYYY-MM');
+            updated = true;
+        }
+    } catch (error) {
+        console.error('❌ Error in checkAndResetUsage:', error.message);
     }
 
     return { updated, updates };
@@ -129,6 +185,7 @@ const checkAndResetUsage = (user) => {
 
 // ===== HELPER: Get plan from Whop Plan ID =====
 const getPlanFromWhopId = (whopPlanId) => {
+    if (!whopPlanId) return 'free';
     return Object.keys(PLANS).find(key => PLANS[key].whop_plan_id === whopPlanId) || 'free';
 };
 
@@ -138,8 +195,22 @@ const getPlanFromWhopId = (whopPlanId) => {
 app.get('/api/user/:whopUserId/verify', async (req, res) => {
     const { whopUserId } = req.params;
 
+    if (!whopUserId || whopUserId === 'undefined') {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'Valid user ID required' 
+        });
+    }
+
     try {
         let user = await getUser(whopUserId);
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
         
         // Apply resets if needed
         const { updated, updates } = checkAndResetUsage(user);
@@ -179,8 +250,12 @@ app.get('/api/user/:whopUserId/verify', async (req, res) => {
         res.json(response);
 
     } catch (error) {
-        console.error('Verify user error:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
+        console.error('❌ Verify user error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 });
 
@@ -192,15 +267,29 @@ app.post('/api/send-email', async (req, res) => {
     const emailCount = recipients.length;
 
     // Validation
-    if (!whopUserId || !campaignName || !subject || !html || !recipients.length || !type) {
+    if (!whopUserId || whopUserId === 'undefined') {
         return res.status(400).json({ 
             success: false, 
-            message: 'Missing required fields' 
+            message: 'Valid user ID required' 
+        });
+    }
+
+    if (!campaignName || !subject || !html || !recipients.length || !type) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'Missing required fields: campaignName, subject, html, to, type' 
         });
     }
 
     try {
         let user = await getUser(whopUserId);
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
         
         // Apply resets
         const { updated, updates } = checkAndResetUsage(user);
@@ -251,7 +340,7 @@ app.post('/api/send-email', async (req, res) => {
         // ===== SEND EMAIL =====
         let sendResult = null;
         
-        if (process.env.EMAIL_ENABLED === 'true' && resend) {
+        if (resend) {
             try {
                 sendResult = await resend.emails.send({
                     from: 'Ledge Marketing <no-reply@send.ledgemarketing.xyz>',
@@ -266,11 +355,11 @@ app.post('/api/send-email', async (req, res) => {
                 });
                 console.log(`✅ Email sent via Resend: ${sendResult.id}`);
             } catch (emailError) {
-                console.error('Resend error:', emailError);
+                console.error('❌ Resend error:', emailError);
                 return res.status(500).json({
                     success: false,
                     message: 'Failed to send email through Resend',
-                    error: emailError.message
+                    error: process.env.NODE_ENV === 'development' ? emailError.message : undefined
                 });
             }
         } else {
@@ -302,10 +391,11 @@ app.post('/api/send-email', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Send email error:', error);
+        console.error('❌ Send email error:', error);
         res.status(500).json({ 
             success: false, 
-            message: 'Server error sending email' 
+            message: 'Server error sending email',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
 });
@@ -314,15 +404,23 @@ app.post('/api/send-email', async (req, res) => {
 app.get('/api/analytics', async (req, res) => {
     const { whopUserId } = req.query;
 
-    if (!whopUserId) {
+    if (!whopUserId || whopUserId === 'undefined') {
         return res.status(400).json({ 
             success: false, 
-            message: 'User ID required' 
+            message: 'Valid user ID required' 
         });
     }
 
     try {
         const user = await getUser(whopUserId);
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
         const plan = PLANS[user.plan] || PLANS.free;
 
         // Check if user has analytics access
@@ -333,7 +431,7 @@ app.get('/api/analytics', async (req, res) => {
             });
         }
 
-        // Demo analytics data (replace with real data later)
+        // Demo analytics data
         const analytics = {
             total_campaigns: 12,
             total_emails_sent: user.monthly_marketing_sent + user.monthly_transactional_sent,
@@ -354,10 +452,11 @@ app.get('/api/analytics', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Analytics error:', error);
+        console.error('❌ Analytics error:', error);
         res.status(500).json({ 
             success: false, 
-            message: 'Server error fetching analytics' 
+            message: 'Server error fetching analytics',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
 });
@@ -366,10 +465,10 @@ app.get('/api/analytics', async (req, res) => {
 app.post('/api/user/update', async (req, res) => {
     const { whopUserId, email, name } = req.body;
 
-    if (!whopUserId) {
+    if (!whopUserId || whopUserId === 'undefined') {
         return res.status(400).json({ 
             success: false, 
-            message: 'User ID required' 
+            message: 'Valid user ID required' 
         });
     }
 
@@ -386,10 +485,11 @@ app.post('/api/user/update', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Update user error:', error);
+        console.error('❌ Update user error:', error);
         res.status(500).json({ 
             success: false, 
-            message: 'Server error updating profile' 
+            message: 'Server error updating profile',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
 });
@@ -403,21 +503,30 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
     // Verify signature in production
     if (process.env.NODE_ENV === 'production' && secret) {
         if (!signature) {
+            console.warn('⚠️  Webhook received without signature');
             return res.status(401).json({ 
                 success: false, 
                 message: 'Missing signature' 
             });
         }
 
-        const hmac = crypto.createHmac('sha256', secret);
-        hmac.update(body);
-        const calculatedSignature = hmac.digest('hex');
+        try {
+            const hmac = crypto.createHmac('sha256', secret);
+            hmac.update(body);
+            const calculatedSignature = hmac.digest('hex');
 
-        if (calculatedSignature !== signature) {
-            console.warn('Invalid webhook signature');
-            return res.status(403).json({ 
-                success: false, 
-                message: 'Invalid signature' 
+            if (calculatedSignature !== signature) {
+                console.warn('⚠️  Invalid webhook signature');
+                return res.status(403).json({ 
+                    success: false, 
+                    message: 'Invalid signature' 
+                });
+            }
+        } catch (error) {
+            console.error('❌ Signature verification error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Signature verification failed'
             });
         }
     }
@@ -426,6 +535,7 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
     try {
         event = JSON.parse(body);
     } catch (error) {
+        console.error('❌ Invalid webhook JSON:', error);
         return res.status(400).json({ 
             success: false, 
             message: 'Invalid JSON' 
@@ -436,6 +546,14 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
 
     try {
         const { type, data } = event;
+
+        if (!data || !data.user_id) {
+            console.warn('⚠️  Webhook missing user_id');
+            return res.status(400).json({
+                success: false,
+                message: 'Missing user_id in webhook data'
+            });
+        }
 
         switch (type) {
             case 'membership.activated':
@@ -467,10 +585,9 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
                 // User canceled or payment failed
                 const deactivatedUserId = data.user_id;
                 await updateUser(deactivatedUserId, { 
-                    plan: 'free',
-                    // Keep their data but restrict to free limits
+                    plan: 'free'
                 });
-                console.log(`⚠️ User ${deactivatedUserId} downgraded to free`);
+                console.log(`⚠️  User ${deactivatedUserId} downgraded to free`);
                 break;
 
             case 'payment.succeeded':
@@ -482,7 +599,7 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
                 break;
 
             default:
-                console.log(`ℹ️ Unhandled webhook type: ${type}`);
+                console.log(`ℹ️  Unhandled webhook type: ${type}`);
         }
 
         res.json({ 
@@ -491,12 +608,12 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
         });
 
     } catch (error) {
-        console.error('Webhook processing error:', error);
+        console.error('❌ Webhook processing error:', error);
         // Still return 200 so Whop doesn't retry
         res.json({ 
             success: false, 
             message: 'Webhook processing failed',
-            error: error.message 
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
 });
@@ -508,18 +625,32 @@ app.get('/health', (req, res) => {
         timestamp: new Date().toISOString(),
         service: 'Ledge Marketing API',
         environment: process.env.NODE_ENV || 'development',
-        frontendPath: frontendPath,
-        frontendExists: fs.existsSync(frontendPath)
+        frontendPath: frontendPath || 'Not found',
+        frontendExists: !!frontendPath,
+        emailEnabled: !!resend,
+        port: PORT
     });
 });
 
-// ===== CRITICAL: Serve frontend at all necessary routes =====
+app.get('/api/health', (req, res) => {
+    res.json({ 
+        status: 'ok',
+        api: 'running',
+        timestamp: new Date().toISOString()
+    });
+});
+
+// ===== FRONTEND ROUTING =====
 // This handles client-side routing for React
 app.get('*', (req, res) => {
     if (req.path.startsWith('/api')) {
         // API routes that don't exist return 404
-        res.status(404).json({ success: false, message: 'API endpoint not found' });
-    } else {
+        res.status(404).json({ 
+            success: false, 
+            message: 'API endpoint not found',
+            path: req.path
+        });
+    } else if (frontendPath) {
         // All non-API routes serve the React app
         const indexPath = path.join(frontendPath, 'index.html');
         
@@ -531,23 +662,85 @@ app.get('*', (req, res) => {
                 <head><title>Build Required</title></head>
                 <body style="font-family: sans-serif; padding: 50px; text-align: center;">
                     <h1>⚠️ Frontend Not Built</h1>
-                    <p>Please run <code>npm run build</code> from the project root to build the frontend.</p>
-                    <p>Expected location: ${indexPath}</p>
-                    <p>Exists: ${fs.existsSync(indexPath)}</p>
+                    <p>Please run <code>npm run build</code> to build the frontend.</p>
+                    <p>Expected: ${indexPath}</p>
                 </body>
                 </html>
             `);
         }
+    } else {
+        res.status(503).send(`
+            <html>
+            <head><title>API Only Mode</title></head>
+            <body style="font-family: sans-serif; padding: 50px; text-align: center;">
+                <h1>🔧 API Only Mode</h1>
+                <p>Frontend not available. API is running at /api/health</p>
+                <p><a href="/health">Check Health Status</a></p>
+            </body>
+            </html>
+        `);
     }
 });
 
+// ===== ERROR HANDLING =====
+app.use((err, req, res, next) => {
+    console.error('❌ Unhandled error:', err);
+    res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+});
+
 // ===== START SERVER =====
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Ledge Marketing backend running on port ${PORT}`);
-    console.log(`🔧 Dashboard: http://localhost:${PORT}`);
-    console.log(`📁 Serving frontend from: ${frontendPath}`);
-    console.log(`📁 Frontend exists: ${fs.existsSync(frontendPath)}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log('');
+    console.log('═══════════════════════════════════════════════');
+    console.log('🚀 Ledge Marketing Backend Started');
+    console.log('═══════════════════════════════════════════════');
+    console.log(`📍 Server: http://localhost:${PORT}`);
     console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`✉️ Email sending: ${process.env.EMAIL_ENABLED === 'true' ? 'ENABLED' : 'DISABLED (demo mode)'}`);
-    console.log(`✅ App ready for Whop installation`);
+    console.log(`📁 Frontend: ${frontendPath ? '✓ Available' : '✗ Not found'}`);
+    console.log(`✉️  Email: ${resend ? '✓ Enabled' : '✗ Demo mode'}`);
+    console.log(`📊 Plans configured: ${Object.keys(PLANS).length}`);
+    console.log(`🏥 Health check: /health`);
+    console.log('═══════════════════════════════════════════════');
+    console.log('');
+}).on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(`❌ Port ${PORT} is already in use`);
+        process.exit(1);
+    } else {
+        console.error('❌ Server error:', err);
+        process.exit(1);
+    }
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('📴 SIGTERM received, shutting down gracefully...');
+    server.close(() => {
+        console.log('✅ Server closed');
+        process.exit(0);
+    });
+});
+
+process.on('SIGINT', () => {
+    console.log('📴 SIGINT received, shutting down gracefully...');
+    server.close(() => {
+        console.log('✅ Server closed');
+        process.exit(0);
+    });
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+    console.error('❌ Uncaught Exception:', err);
+    console.error(err.stack);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise);
+    console.error('Reason:', reason);
 });
