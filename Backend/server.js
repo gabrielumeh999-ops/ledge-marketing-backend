@@ -5,6 +5,7 @@ const { Resend } = require('resend');
 const moment = require('moment');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
 
 // Load environment variables
 dotenv.config();
@@ -17,8 +18,18 @@ app.use(cors());
 app.use(express.json());
 
 // ===== CRITICAL: Serve built frontend files =====
-const frontendPath = path.join(__dirname, '../dist');
-app.use(express.static(frontendPath));
+// Corrected path - looks for frontend/dist from Backend folder
+const frontendPath = path.join(__dirname, '../frontend/dist');
+console.log('📁 Frontend path:', frontendPath);
+console.log('📁 Frontend exists:', fs.existsSync(frontendPath));
+
+// Only serve static files if the dist folder exists
+if (fs.existsSync(frontendPath)) {
+    app.use(express.static(frontendPath));
+    console.log('✅ Serving frontend from:', frontendPath);
+} else {
+    console.warn('⚠️ Frontend dist folder not found. Run "npm run build" first.');
+}
 
 // Initialize Resend (if enabled)
 const resend = process.env.EMAIL_ENABLED === 'true' ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -41,7 +52,7 @@ const PLANS = {
         marketing_emails: { monthly: 300, daily: 10 },
         transactional_emails: { monthly: 200, daily: 6, enabled: true },
         analytics_enabled: false,
-        whop_plan_id: process.env.WHOP_PLAN_ID_STARTER || 'https://whop.com/checkout/plan_S5f00AqapCeD7', // ← REPLACE
+        whop_plan_id: process.env.WHOP_PLAN_ID_STARTER || 'plan_starter',
     },
     'growth': {
         name: 'Growth Plan',
@@ -50,7 +61,7 @@ const PLANS = {
         marketing_emails: { monthly: 750, daily: 25 },
         transactional_emails: { monthly: 500, daily: 16, enabled: true },
         analytics_enabled: false,
-        whop_plan_id: process.env.WHOP_PLAN_ID_GROWTH || 'https://whop.com/checkout/plan_ENJBoGj2az1Ip', // ← REPLACE
+        whop_plan_id: process.env.WHOP_PLAN_ID_GROWTH || 'plan_growth',
     },
     'pro': {
         name: 'Pro Plan',
@@ -59,7 +70,7 @@ const PLANS = {
         marketing_emails: { monthly: 1200, daily: 40 },
         transactional_emails: { monthly: 1000, daily: 33, enabled: true },
         analytics_enabled: true,
-        whop_plan_id: process.env.WHOP_PLAN_ID_PRO || 'https://whop.com/checkout/plan_j0MoNy7XTp7Nm', // ← REPLACE
+        whop_plan_id: process.env.WHOP_PLAN_ID_PRO || 'plan_pro',
     },
 };
 
@@ -121,7 +132,7 @@ const getPlanFromWhopId = (whopPlanId) => {
     return Object.keys(PLANS).find(key => PLANS[key].whop_plan_id === whopPlanId) || 'free';
 };
 
-// ===== API ROUTES (UNCHANGED FROM YOUR ORIGINAL) =====
+// ===== API ROUTES =====
 
 // 1. Verify user and get usage data
 app.get('/api/user/:whopUserId/verify', async (req, res) => {
@@ -495,7 +506,10 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
         timestamp: new Date().toISOString(),
-        service: 'Ledge Marketing API'
+        service: 'Ledge Marketing API',
+        environment: process.env.NODE_ENV || 'development',
+        frontendPath: frontendPath,
+        frontendExists: fs.existsSync(frontendPath)
     });
 });
 
@@ -507,15 +521,32 @@ app.get('*', (req, res) => {
         res.status(404).json({ success: false, message: 'API endpoint not found' });
     } else {
         // All non-API routes serve the React app
-        res.sendFile(path.join(frontendPath, 'index.html'));
+        const indexPath = path.join(frontendPath, 'index.html');
+        
+        if (fs.existsSync(indexPath)) {
+            res.sendFile(indexPath);
+        } else {
+            res.status(503).send(`
+                <html>
+                <head><title>Build Required</title></head>
+                <body style="font-family: sans-serif; padding: 50px; text-align: center;">
+                    <h1>⚠️ Frontend Not Built</h1>
+                    <p>Please run <code>npm run build</code> from the project root to build the frontend.</p>
+                    <p>Expected location: ${indexPath}</p>
+                    <p>Exists: ${fs.existsSync(indexPath)}</p>
+                </body>
+                </html>
+            `);
+        }
     }
 });
 
 // ===== START SERVER =====
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Ledge Marketing backend running on port ${PORT}`);
-    console.log(`📧 Dashboard: http://localhost:${PORT}`);
+    console.log(`🔧 Dashboard: http://localhost:${PORT}`);
     console.log(`📁 Serving frontend from: ${frontendPath}`);
+    console.log(`📁 Frontend exists: ${fs.existsSync(frontendPath)}`);
     console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`✉️ Email sending: ${process.env.EMAIL_ENABLED === 'true' ? 'ENABLED' : 'DISABLED (demo mode)'}`);
     console.log(`✅ App ready for Whop installation`);

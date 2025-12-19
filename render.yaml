@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: ledge-marketing
+    runtime: node
+    region: oregon
+    plan: free
+    branch: main
+    buildCommand: npm run render-build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: EMAIL_ENABLED
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: WHOP_API_KEY
+        sync: false
+      - key: WHOP_WEBHOOK_SECRET
+        sync: false
+      - key: WHOP_PLAN_ID_FREE
+        value: FREE
+      - key: WHOP_PLAN_ID_STARTER
+        sync: false
+      - key: WHOP_PLAN_ID_GROWTH
+        sync: false
+      - key: WHOP_PLAN_ID_PRO
+        sync: false
