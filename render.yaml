@@ -1,12 +1,14 @@
 services:
+  # Backend API Service
   - type: web
-    name: ledge-marketing
+    name: ledge-marketing-backend
     runtime: node
     region: oregon
     plan: free
     branch: main
-    buildCommand: cd Backend && npm install && cd ../frontend && npm install && npm run build && cd ..
-    startCommand: node Backend/server.js
+    rootDir: Backend
+    buildCommand: npm install
+    startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
@@ -14,6 +16,8 @@ services:
         value: 10000
       - key: EMAIL_ENABLED
         value: false
+      - key: FRONTEND_URL
+        value: https://ledge-marketing-frontend.onrender.com
       - key: RESEND_API_KEY
         sync: false
       - key: WHOP_API_KEY
@@ -28,3 +32,29 @@ services:
         sync: false
       - key: WHOP_PLAN_ID_PRO
         sync: false
+    healthCheckPath: /health
+
+  # Frontend Static Site Service
+  - type: web
+    name: ledge-marketing-frontend
+    runtime: static
+    region: oregon
+    plan: free
+    branch: main
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://ledge-marketing-backend.onrender.com
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: ALLOWALL
+      - path: /*
+        name: Access-Control-Allow-Origin
+        value: "*"
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
