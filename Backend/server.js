@@ -4,11 +4,10 @@ const dotenv = require('dotenv');
 const moment = require('moment');
 const crypto = require('crypto');
 const path = require('path');
-const fs = require('fs');
 
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, '../.env') });
-dotenv.config(); // Also try local .env
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -18,6 +17,7 @@ console.log('🔧 Environment Check:');
 console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
 console.log('- PORT:', PORT);
 console.log('- EMAIL_ENABLED:', process.env.EMAIL_ENABLED);
+console.log('- FRONTEND_URL:', process.env.FRONTEND_URL);
 console.log('- RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✓ Set' : '✗ Missing');
 
 // Initialize Resend only if enabled and key exists
@@ -41,38 +41,37 @@ if (process.env.EMAIL_ENABLED === 'true') {
     console.log('📧 Email sending disabled (demo mode)');
 }
 
-// Middleware
-app.use(cors());
+// ===== CORS CONFIGURATION =====
+const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    process.env.FRONTEND_URL,
+    'https://ledge-marketing-frontend.onrender.com',
+    'https://whop.com',
+    'https://app.whop.com'
+].filter(Boolean);
+
+app.use(cors({
+    origin: function(origin, callback) {
+        // Allow requests with no origin (mobile apps, Postman, etc.)
+        if (!origin) return callback(null, true);
+        
+        if (allowedOrigins.some(allowed => origin.startsWith(allowed))) {
+            callback(null, true);
+        } else {
+            console.warn('⚠️  CORS blocked origin:', origin);
+            callback(null, true); // Allow in production for Whop iframe
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'whop-signature']
+}));
+
 app.use(express.json());
 
-// ===== FRONTEND STATIC FILES =====
-// Try multiple possible paths for frontend dist
-const possibleFrontendPaths = [
-    path.join(__dirname, '../frontend/dist'),
-    path.join(__dirname, '../../frontend/dist'),
-    path.join(__dirname, 'frontend/dist'),
-    path.join(process.cwd(), 'frontend/dist')
-];
-
-let frontendPath = null;
-for (const testPath of possibleFrontendPaths) {
-    if (fs.existsSync(testPath)) {
-        frontendPath = testPath;
-        break;
-    }
-}
-
-console.log('📁 Frontend path search:');
-possibleFrontendPaths.forEach(p => {
-    console.log(`  - ${p}: ${fs.existsSync(p) ? '✓ Found' : '✗ Not found'}`);
-});
-
-if (frontendPath) {
-    app.use(express.static(frontendPath));
-    console.log('✅ Serving frontend from:', frontendPath);
-} else {
-    console.warn('⚠️  Frontend dist folder not found. API-only mode.');
-}
+// Handle preflight requests
+app.options('*', cors());
 
 // ===== PLANS CONFIGURATION (SOURCE OF TRUTH) =====
 const PLANS = {
@@ -190,6 +189,24 @@ const getPlanFromWhopId = (whopPlanId) => {
 };
 
 // ===== API ROUTES =====
+
+// Root endpoint
+app.get('/', (req, res) => {
+    res.json({
+        service: 'Ledge Marketing API',
+        version: '1.0.0',
+        status: 'running',
+        endpoints: {
+            health: '/health',
+            api_health: '/api/health',
+            verify_user: '/api/user/:whopUserId/verify',
+            send_email: '/api/send-email',
+            analytics: '/api/analytics',
+            update_user: '/api/user/update',
+            webhook: '/api/webhooks/whop'
+        }
+    });
+});
 
 // 1. Verify user and get usage data
 app.get('/api/user/:whopUserId/verify', async (req, res) => {
@@ -625,10 +642,9 @@ app.get('/health', (req, res) => {
         timestamp: new Date().toISOString(),
         service: 'Ledge Marketing API',
         environment: process.env.NODE_ENV || 'development',
-        frontendPath: frontendPath || 'Not found',
-        frontendExists: !!frontendPath,
         emailEnabled: !!resend,
-        port: PORT
+        port: PORT,
+        corsOrigins: allowedOrigins
     });
 });
 
@@ -640,46 +656,13 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// ===== FRONTEND ROUTING =====
-// This handles client-side routing for React
-app.get('*', (req, res) => {
-    if (req.path.startsWith('/api')) {
-        // API routes that don't exist return 404
-        res.status(404).json({ 
-            success: false, 
-            message: 'API endpoint not found',
-            path: req.path
-        });
-    } else if (frontendPath) {
-        // All non-API routes serve the React app
-        const indexPath = path.join(frontendPath, 'index.html');
-        
-        if (fs.existsSync(indexPath)) {
-            res.sendFile(indexPath);
-        } else {
-            res.status(503).send(`
-                <html>
-                <head><title>Build Required</title></head>
-                <body style="font-family: sans-serif; padding: 50px; text-align: center;">
-                    <h1>⚠️ Frontend Not Built</h1>
-                    <p>Please run <code>npm run build</code> to build the frontend.</p>
-                    <p>Expected: ${indexPath}</p>
-                </body>
-                </html>
-            `);
-        }
-    } else {
-        res.status(503).send(`
-            <html>
-            <head><title>API Only Mode</title></head>
-            <body style="font-family: sans-serif; padding: 50px; text-align: center;">
-                <h1>🔧 API Only Mode</h1>
-                <p>Frontend not available. API is running at /api/health</p>
-                <p><a href="/health">Check Health Status</a></p>
-            </body>
-            </html>
-        `);
-    }
+// 404 handler for undefined API routes
+app.use('/api/*', (req, res) => {
+    res.status(404).json({ 
+        success: false, 
+        message: 'API endpoint not found',
+        path: req.path
+    });
 });
 
 // ===== ERROR HANDLING =====
@@ -700,9 +683,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('═══════════════════════════════════════════════');
     console.log(`📍 Server: http://localhost:${PORT}`);
     console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`📁 Frontend: ${frontendPath ? '✓ Available' : '✗ Not found'}`);
     console.log(`✉️  Email: ${resend ? '✓ Enabled' : '✗ Demo mode'}`);
     console.log(`📊 Plans configured: ${Object.keys(PLANS).length}`);
+    console.log(`🌐 CORS origins: ${allowedOrigins.length}`);
     console.log(`🏥 Health check: /health`);
     console.log('═══════════════════════════════════════════════');
     console.log('');
