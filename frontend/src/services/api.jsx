@@ -1,11 +1,32 @@
 import axios from 'axios'
 
+// Determine the API base URL based on environment
+const getApiBaseUrl = () => {
+  // In production, use the environment variable
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL
+  }
+  
+  // In development, use localhost
+  if (import.meta.env.DEV) {
+    return 'http://localhost:5000'
+  }
+  
+  // Fallback to same origin
+  return window.location.origin
+}
+
+const API_BASE_URL = getApiBaseUrl()
+
+console.log('🔗 API Base URL:', API_BASE_URL)
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: `${API_BASE_URL}/api`,
   timeout: 10000,
   headers: {
     'Content-Type': 'application/json'
-  }
+  },
+  withCredentials: false
 })
 
 // Request interceptor to add Whop user ID if available
@@ -16,6 +37,21 @@ api.interceptors.request.use((config) => {
   }
   return config
 })
+
+// Response interceptor for error handling
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response) {
+      console.error('API Error:', error.response.status, error.response.data)
+    } else if (error.request) {
+      console.error('Network Error: No response received')
+    } else {
+      console.error('Error:', error.message)
+    }
+    return Promise.reject(error)
+  }
+)
 
 export const userAPI = {
   verify: (whopUserId) => api.get(`/user/${whopUserId}/verify`),
