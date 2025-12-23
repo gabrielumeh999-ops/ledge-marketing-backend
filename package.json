@@ -4,9 +4,7 @@
   "description": "Email marketing SaaS for Whop",
   "main": "Backend/server.js",
   "scripts": {
-    "start": "cd Backend && npm install && cd .. && node Backend/server.js",
-    "build": "cd frontend && npm install && npm run build",
-    "render-build": "npm install && cd Backend && npm install && cd ../frontend && npm install && npm run build && cd .."
+    "start": "cd Backend && node server.js"
   },
   "engines": {
     "node": ">=18.0.0",
@@ -16,4 +14,3 @@
   "author": "",
   "license": "ISC"
 }
-
