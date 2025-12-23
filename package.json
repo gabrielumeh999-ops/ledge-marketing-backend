@@ -2,15 +2,26 @@
   "name": "ledge-marketing",
   "version": "1.0.0",
   "description": "Email marketing SaaS for Whop",
-  "main": "Backend/server.js",
+  "private": true,
   "scripts": {
-    "start": "cd Backend && node server.js"
+    "install:backend": "cd Backend && npm install",
+    "install:frontend": "cd frontend && npm install",
+    "install:all": "npm run install:backend && npm run install:frontend",
+    "dev:backend": "cd Backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:frontend": "cd frontend && npm run build",
+    "start:backend": "cd Backend && npm start",
+    "deploy:check": "node scripts/deploy-check.js"
   },
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=9.0.0"
   },
-  "keywords": ["whop", "email", "marketing", "saas"],
+  "keywords": ["whop", "email", "marketing", "saas", "render"],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/ledge-marketing.git"
+  }
 }
