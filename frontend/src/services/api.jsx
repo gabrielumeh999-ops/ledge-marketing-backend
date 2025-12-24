@@ -66,4 +66,12 @@ export const analyticsAPI = {
   get: (whopUserId) => api.get(`/analytics?whopUserId=${whopUserId}`)
 }
 
+export const subscriberAPI = {
+  getAll: (whopUserId) => api.get(`/subscribers?whopUserId=${whopUserId}`),
+  add: (data) => api.post('/subscribers', data),
+  update: (id, data) => api.put(`/subscribers/${id}`, data),
+  delete: (id, whopUserId) => api.delete(`/subscribers/${id}?whopUserId=${whopUserId}`),
+  bulkImport: (data) => api.post('/subscribers/bulk', data)
+}
+
 export default api
