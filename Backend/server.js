@@ -4,6 +4,7 @@ const dotenv = require('dotenv');
 const moment = require('moment');
 const crypto = require('crypto');
 const path = require('path');
+const db = require('./database');
 
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, '../.env') });
@@ -18,6 +19,7 @@ console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
 console.log('- PORT:', PORT);
 console.log('- EMAIL_ENABLED:', process.env.EMAIL_ENABLED);
 console.log('- FRONTEND_URL:', process.env.FRONTEND_URL);
+console.log('- DATABASE_URL:', process.env.DATABASE_URL ? '✓ Set' : '✗ Missing');
 console.log('- RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✓ Set' : '✗ Missing');
 
 // Initialize Resend only if enabled and key exists
@@ -53,14 +55,12 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: function(origin, callback) {
-        // Allow requests with no origin (mobile apps, Postman, etc.)
         if (!origin) return callback(null, true);
-        
         if (allowedOrigins.some(allowed => origin.startsWith(allowed))) {
             callback(null, true);
         } else {
             console.warn('⚠️  CORS blocked origin:', origin);
-            callback(null, true); // Allow in production for Whop iframe
+            callback(null, true);
         }
     },
     credentials: true,
@@ -69,11 +69,14 @@ app.use(cors({
 }));
 
 app.use(express.json());
-
-// Handle preflight requests
 app.options('*', cors());
 
-// ===== PLANS CONFIGURATION (SOURCE OF TRUTH) =====
+// ===== INITIALIZE DATABASE =====
+db.initializeDatabase().catch(err => {
+    console.error('Failed to initialize database:', err);
+});
+
+// ===== PLANS CONFIGURATION =====
 const PLANS = {
     'free': {
         name: 'Free Plan',
@@ -113,42 +116,6 @@ const PLANS = {
     },
 };
 
-// ===== IN-MEMORY DATABASE =====
-const usersDB = {};
-
-const getUser = async (whopUserId) => {
-    if (!whopUserId) {
-        console.warn('⚠️  getUser called with empty whopUserId');
-        return null;
-    }
-
-    const defaultUser = {
-        plan: 'free',
-        contacts_count: 0,
-        daily_marketing_sent: 0,
-        monthly_marketing_sent: 0,
-        daily_transactional_sent: 0,
-        monthly_transactional_sent: 0,
-        last_daily_reset: moment.utc().format('YYYY-MM-DD'),
-        last_monthly_reset: moment.utc().format('YYYY-MM'),
-        email: '',
-        name: ''
-    };
-    return usersDB[whopUserId] || { ...defaultUser };
-};
-
-const updateUser = async (whopUserId, data) => {
-    if (!whopUserId) {
-        console.warn('⚠️  updateUser called with empty whopUserId');
-        return null;
-    }
-
-    const existing = await getUser(whopUserId);
-    usersDB[whopUserId] = { ...existing, ...data, whopUserId };
-    console.log(`[DB] Updated user ${whopUserId}:`, Object.keys(data).join(', '));
-    return usersDB[whopUserId];
-};
-
 // ===== USAGE RESET LOGIC =====
 const checkAndResetUsage = (user) => {
     if (!user) return { updated: false, updates: {} };
@@ -158,8 +125,7 @@ const checkAndResetUsage = (user) => {
     const updates = {};
 
     try {
-        // Daily reset (00:00 UTC)
-        const lastDaily = moment.utc(user.last_daily_reset, 'YYYY-MM-DD');
+        const lastDaily = moment.utc(user.last_daily_reset);
         if (now.isAfter(lastDaily, 'day')) {
             updates.daily_marketing_sent = 0;
             updates.daily_transactional_sent = 0;
@@ -167,8 +133,7 @@ const checkAndResetUsage = (user) => {
             updated = true;
         }
 
-        // Monthly reset (1st of month)
-        const lastMonthly = moment.utc(user.last_monthly_reset, 'YYYY-MM');
+        const lastMonthly = moment.utc(user.last_monthly_reset + '-01');
         if (now.isAfter(lastMonthly, 'month')) {
             updates.monthly_marketing_sent = 0;
             updates.monthly_transactional_sent = 0;
@@ -182,7 +147,6 @@ const checkAndResetUsage = (user) => {
     return { updated, updates };
 };
 
-// ===== HELPER: Get plan from Whop Plan ID =====
 const getPlanFromWhopId = (whopPlanId) => {
     if (!whopPlanId) return 'free';
     return Object.keys(PLANS).find(key => PLANS[key].whop_plan_id === whopPlanId) || 'free';
@@ -190,7 +154,6 @@ const getPlanFromWhopId = (whopPlanId) => {
 
 // ===== API ROUTES =====
 
-// Root endpoint
 app.get('/', (req, res) => {
     res.json({
         service: 'Ledge Marketing API',
@@ -201,6 +164,7 @@ app.get('/', (req, res) => {
             api_health: '/api/health',
             verify_user: '/api/user/:whopUserId/verify',
             send_email: '/api/send-email',
+            subscribers: '/api/subscribers',
             analytics: '/api/analytics',
             update_user: '/api/user/update',
             webhook: '/api/webhooks/whop'
@@ -220,7 +184,7 @@ app.get('/api/user/:whopUserId/verify', async (req, res) => {
     }
 
     try {
-        let user = await getUser(whopUserId);
+        let user = await db.getUser(whopUserId);
         
         if (!user) {
             return res.status(404).json({
@@ -229,10 +193,9 @@ app.get('/api/user/:whopUserId/verify', async (req, res) => {
             });
         }
         
-        // Apply resets if needed
         const { updated, updates } = checkAndResetUsage(user);
         if (updated) {
-            user = await updateUser(whopUserId, updates);
+            user = await db.updateUser(whopUserId, updates);
         }
 
         const plan = PLANS[user.plan] || PLANS.free;
@@ -245,15 +208,11 @@ app.get('/api/user/:whopUserId/verify', async (req, res) => {
                 planName: plan.name,
                 email: user.email || '',
                 name: user.name || '',
-                
-                // Usage
                 contacts_count: user.contacts_count || 0,
                 daily_marketing_sent: user.daily_marketing_sent || 0,
                 monthly_marketing_sent: user.monthly_marketing_sent || 0,
                 daily_transactional_sent: user.daily_transactional_sent || 0,
                 monthly_transactional_sent: user.monthly_transactional_sent || 0,
-                
-                // Limits
                 contact_limit: plan.contact_limit,
                 marketing_limit_monthly: plan.marketing_emails.monthly,
                 marketing_limit_daily: plan.marketing_emails.daily,
@@ -283,7 +242,6 @@ app.post('/api/send-email', async (req, res) => {
     const recipients = Array.isArray(to) ? to : [to];
     const emailCount = recipients.length;
 
-    // Validation
     if (!whopUserId || whopUserId === 'undefined') {
         return res.status(400).json({ 
             success: false, 
@@ -299,7 +257,7 @@ app.post('/api/send-email', async (req, res) => {
     }
 
     try {
-        let user = await getUser(whopUserId);
+        let user = await db.getUser(whopUserId);
         
         if (!user) {
             return res.status(404).json({
@@ -308,17 +266,13 @@ app.post('/api/send-email', async (req, res) => {
             });
         }
         
-        // Apply resets
         const { updated, updates } = checkAndResetUsage(user);
         if (updated) {
-            user = await updateUser(whopUserId, updates);
+            user = await db.updateUser(whopUserId, updates);
         }
 
         const plan = PLANS[user.plan] || PLANS.free;
 
-        // ===== ENFORCE PLAN LIMITS =====
-        
-        // 1. Contact limit
         if (user.contacts_count + emailCount > plan.contact_limit) {
             return res.status(403).json({
                 success: false,
@@ -326,7 +280,6 @@ app.post('/api/send-email', async (req, res) => {
             });
         }
 
-        // 2. Transactional access check
         if (emailType === 'transactional' && !plan.transactional_emails.enabled) {
             return res.status(403).json({
                 success: false,
@@ -334,7 +287,6 @@ app.post('/api/send-email', async (req, res) => {
             });
         }
 
-        // 3. Daily limit check
         const dailyKey = `daily_${emailType}_sent`;
         const dailyLimit = plan[`${emailType}_emails`].daily;
         if (user[dailyKey] + emailCount > dailyLimit) {
@@ -344,7 +296,6 @@ app.post('/api/send-email', async (req, res) => {
             });
         }
 
-        // 4. Monthly limit check
         const monthlyKey = `monthly_${emailType}_sent`;
         const monthlyLimit = plan[`${emailType}_emails`].monthly;
         if (user[monthlyKey] + emailCount > monthlyLimit) {
@@ -354,7 +305,6 @@ app.post('/api/send-email', async (req, res) => {
             });
         }
 
-        // ===== SEND EMAIL =====
         let sendResult = null;
         
         if (resend) {
@@ -380,21 +330,18 @@ app.post('/api/send-email', async (req, res) => {
                 });
             }
         } else {
-            // Demo mode
             console.log(`[DEMO] Would send ${emailType} email to ${emailCount} recipients`);
             sendResult = { id: 'demo_' + Date.now(), demo: true };
         }
 
-        // ===== UPDATE USAGE =====
         const usageUpdates = {
             [dailyKey]: (user[dailyKey] || 0) + emailCount,
             [monthlyKey]: (user[monthlyKey] || 0) + emailCount,
             contacts_count: (user.contacts_count || 0) + emailCount
         };
 
-        await updateUser(whopUserId, usageUpdates);
+        await db.updateUser(whopUserId, usageUpdates);
 
-        // ===== RESPONSE =====
         res.json({
             success: true,
             message: `Email sent to ${emailCount} recipient(s)`,
@@ -429,7 +376,7 @@ app.get('/api/analytics', async (req, res) => {
     }
 
     try {
-        const user = await getUser(whopUserId);
+        const user = await db.getUser(whopUserId);
         
         if (!user) {
             return res.status(404).json({
@@ -440,7 +387,6 @@ app.get('/api/analytics', async (req, res) => {
 
         const plan = PLANS[user.plan] || PLANS.free;
 
-        // Check if user has analytics access
         if (!plan.analytics_enabled) {
             return res.status(403).json({
                 success: false,
@@ -448,7 +394,6 @@ app.get('/api/analytics', async (req, res) => {
             });
         }
 
-        // Demo analytics data
         const analytics = {
             total_campaigns: 12,
             total_emails_sent: user.monthly_marketing_sent + user.monthly_transactional_sent,
@@ -494,7 +439,7 @@ app.post('/api/user/update', async (req, res) => {
         if (email) updates.email = email;
         if (name) updates.name = name;
 
-        await updateUser(whopUserId, updates);
+        await db.updateUser(whopUserId, updates);
 
         res.json({
             success: true,
@@ -511,13 +456,246 @@ app.post('/api/user/update', async (req, res) => {
     }
 });
 
+// ===== SUBSCRIBER ENDPOINTS =====
+
+app.get('/api/subscribers', async (req, res) => {
+    const { whopUserId } = req.query;
+
+    if (!whopUserId || whopUserId === 'undefined') {
+        return res.status(400).json({
+            success: false,
+            message: 'Valid user ID required'
+        });
+    }
+
+    try {
+        const subscribers = await db.getSubscribers(whopUserId);
+        const activeCount = await db.getSubscriberCount(whopUserId, 'active');
+        const totalCount = await db.getSubscriberCount(whopUserId);
+
+        res.json({
+            success: true,
+            subscribers,
+            stats: {
+                total: totalCount,
+                active: activeCount,
+                unsubscribed: totalCount - activeCount
+            }
+        });
+    } catch (error) {
+        console.error('❌ Get subscribers error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error fetching subscribers',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
+
+app.post('/api/subscribers', async (req, res) => {
+    const { whopUserId, email, name } = req.body;
+
+    if (!whopUserId || whopUserId === 'undefined') {
+        return res.status(400).json({
+            success: false,
+            message: 'Valid user ID required'
+        });
+    }
+
+    if (!email) {
+        return res.status(400).json({
+            success: false,
+            message: 'Email is required'
+        });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid email format'
+        });
+    }
+
+    try {
+        const user = await db.getUser(whopUserId);
+        const currentCount = await db.getSubscriberCount(whopUserId);
+        const plan = PLANS[user.plan] || PLANS.free;
+
+        if (currentCount >= plan.contact_limit) {
+            return res.status(403).json({
+                success: false,
+                message: `Contact limit reached: ${currentCount}/${plan.contact_limit}`
+            });
+        }
+
+        const subscriber = await db.addSubscriber(whopUserId, {
+            email,
+            name: name || '',
+            status: 'active'
+        });
+
+        await db.updateUser(whopUserId, {
+            contacts_count: currentCount + 1
+        });
+
+        res.json({
+            success: true,
+            message: 'Subscriber added successfully',
+            subscriber,
+            newCount: currentCount + 1
+        });
+    } catch (error) {
+        console.error('❌ Add subscriber error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error adding subscriber',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
+
+app.put('/api/subscribers/:id', async (req, res) => {
+    const { id } = req.params;
+    const { whopUserId, name, status } = req.body;
+
+    if (!whopUserId || whopUserId === 'undefined') {
+        return res.status(400).json({
+            success: false,
+            message: 'Valid user ID required'
+        });
+    }
+
+    try {
+        const updates = {};
+        if (name !== undefined) updates.name = name;
+        if (status !== undefined) updates.status = status;
+
+        const subscriber = await db.updateSubscriber(id, whopUserId, updates);
+
+        if (!subscriber) {
+            return res.status(404).json({
+                success: false,
+                message: 'Subscriber not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Subscriber updated successfully',
+            subscriber
+        });
+    } catch (error) {
+        console.error('❌ Update subscriber error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error updating subscriber',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
+
+app.delete('/api/subscribers/:id', async (req, res) => {
+    const { id } = req.params;
+    const { whopUserId } = req.query;
+
+    if (!whopUserId || whopUserId === 'undefined') {
+        return res.status(400).json({
+            success: false,
+            message: 'Valid user ID required'
+        });
+    }
+
+    try {
+        const subscriber = await db.deleteSubscriber(id, whopUserId);
+
+        if (!subscriber) {
+            return res.status(404).json({
+                success: false,
+                message: 'Subscriber not found'
+            });
+        }
+
+        const newCount = await db.getSubscriberCount(whopUserId);
+        await db.updateUser(whopUserId, {
+            contacts_count: newCount
+        });
+
+        res.json({
+            success: true,
+            message: 'Subscriber deleted successfully',
+            newCount
+        });
+    } catch (error) {
+        console.error('❌ Delete subscriber error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error deleting subscriber',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
+
+app.post('/api/subscribers/bulk', async (req, res) => {
+    const { whopUserId, subscribers } = req.body;
+
+    if (!whopUserId || whopUserId === 'undefined') {
+        return res.status(400).json({
+            success: false,
+            message: 'Valid user ID required'
+        });
+    }
+
+    if (!Array.isArray(subscribers) || subscribers.length === 0) {
+        return res.status(400).json({
+            success: false,
+            message: 'Subscribers array is required'
+        });
+    }
+
+    try {
+        const user = await db.getUser(whopUserId);
+        const currentCount = await db.getSubscriberCount(whopUserId);
+        const plan = PLANS[user.plan] || PLANS.free;
+        const availableSlots = plan.contact_limit - currentCount;
+
+        if (subscribers.length > availableSlots) {
+            return res.status(403).json({
+                success: false,
+                message: `Not enough contact slots. Available: ${availableSlots}, Requested: ${subscribers.length}`
+            });
+        }
+
+        const addedSubscribers = await db.bulkAddSubscribers(whopUserId, subscribers);
+        const newCount = await db.getSubscriberCount(whopUserId);
+        
+        await db.updateUser(whopUserId, {
+            contacts_count: newCount
+        });
+
+        res.json({
+            success: true,
+            message: `${addedSubscribers.length} subscribers imported successfully`,
+            added: addedSubscribers.length,
+            skipped: subscribers.length - addedSubscribers.length,
+            newCount
+        });
+    } catch (error) {
+        console.error('❌ Bulk import error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error importing subscribers',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
+
 // ===== WHOP WEBHOOK HANDLER =====
 app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async (req, res) => {
     const signature = req.headers['whop-signature'];
     const body = req.body.toString('utf8');
     const secret = process.env.WHOP_WEBHOOK_SECRET;
 
-    // Verify signature in production
     if (process.env.NODE_ENV === 'production' && secret) {
         if (!signature) {
             console.warn('⚠️  Webhook received without signature');
@@ -575,14 +753,12 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
         switch (type) {
             case 'membership.activated':
             case 'invoice.paid':
-                // User purchased or renewed
                 const whopPlanId = data.plan_id;
                 const planKey = getPlanFromWhopId(whopPlanId);
                 const userId = data.user_id;
 
-                await updateUser(userId, {
+                await db.updateUser(userId, {
                     plan: planKey,
-                    // Reset usage for new plan
                     daily_marketing_sent: 0,
                     monthly_marketing_sent: 0,
                     daily_transactional_sent: 0,
@@ -599,11 +775,8 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
 
             case 'membership.deactivated':
             case 'invoice.past_due':
-                // User canceled or payment failed
                 const deactivatedUserId = data.user_id;
-                await updateUser(deactivatedUserId, { 
-                    plan: 'free'
-                });
+                await db.updateUser(deactivatedUserId, { plan: 'free' });
                 console.log(`⚠️  User ${deactivatedUserId} downgraded to free`);
                 break;
 
@@ -626,7 +799,6 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
 
     } catch (error) {
         console.error('❌ Webhook processing error:', error);
-        // Still return 200 so Whop doesn't retry
         res.json({ 
             success: false, 
             message: 'Webhook processing failed',
@@ -643,6 +815,7 @@ app.get('/health', (req, res) => {
         service: 'Ledge Marketing API',
         environment: process.env.NODE_ENV || 'development',
         emailEnabled: !!resend,
+        databaseConnected: !!db.pool,
         port: PORT,
         corsOrigins: allowedOrigins
     });
@@ -656,7 +829,6 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// 404 handler for undefined API routes
 app.use('/api/*', (req, res) => {
     res.status(404).json({ 
         success: false, 
@@ -684,6 +856,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`📍 Server: http://localhost:${PORT}`);
     console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`✉️  Email: ${resend ? '✓ Enabled' : '✗ Demo mode'}`);
+    console.log(`💾 Database: ${process.env.DATABASE_URL ? '✓ Connected' : '✗ Not configured'}`);
     console.log(`📊 Plans configured: ${Object.keys(PLANS).length}`);
     console.log(`🌐 CORS origins: ${allowedOrigins.length}`);
     console.log(`🏥 Health check: /health`);
@@ -727,3 +900,4 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Unhandled Rejection at:', promise);
     console.error('Reason:', reason);
 });
+
