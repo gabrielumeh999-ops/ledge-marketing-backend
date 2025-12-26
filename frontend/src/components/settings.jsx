@@ -18,7 +18,6 @@ const Settings = () => {
     try {
       const response = await userAPI.update({
         whopUserId: user.id,
-        email: form.email,
         name: form.name
       })
       
@@ -54,13 +53,22 @@ const Settings = () => {
         </div>
         
         <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem' }}>Display Name</label>
+          <label style={{ display: 'block', marginBottom: '0.5rem' }}>Account Email</label>
           <input
-            type="text"
-            style={{ width: '100%', padding: '0.5rem' }}
-            value={form.name}
-            onChange={(e) => setForm({...form, name: e.target.value})}
+            type="email"
+            disabled
+            style={{ 
+              width: '100%', 
+              padding: '0.5rem', 
+              background: '#f5f5f5',
+              cursor: 'not-allowed',
+              color: '#666'
+            }}
+            value={form.email}
           />
+          <small style={{ display: 'block', marginTop: '0.25rem', color: '#666', fontSize: '0.875rem' }}>
+            Managed by Whop - cannot be changed
+          </small>
         </div>
         
         <div style={{ marginBottom: '1rem' }}>
@@ -91,5 +99,6 @@ const Settings = () => {
     </div>
   )
 }
+
 
 export default Settings
