@@ -71,7 +71,9 @@ export const subscriberAPI = {
   add: (data) => api.post('/subscribers', data),
   update: (id, data) => api.put(`/subscribers/${id}`, data),
   delete: (id, whopUserId) => api.delete(`/subscribers/${id}?whopUserId=${whopUserId}`),
+  toggleVip: (id, whopUserId) => api.put(`/subscribers/${id}/vip`, { whopUserId }),
   bulkImport: (data) => api.post('/subscribers/bulk', data)
 }
 
 export default api
+
