@@ -48,6 +48,7 @@ const initializeDatabase = async () => {
                 email VARCHAR(255) NOT NULL,
                 name VARCHAR(255),
                 status VARCHAR(50) DEFAULT 'active',
+                is_vip BOOLEAN DEFAULT false,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (whop_user_id) REFERENCES users(whop_user_id) ON DELETE CASCADE,
@@ -256,6 +257,21 @@ const updateSubscriber = async (subscriberId, whopUserId, data) => {
     }
 };
 
+const toggleVipStatus = async (subscriberId, whopUserId) => {
+    try {
+        const result = await pool.query(
+            `UPDATE subscribers 
+             SET is_vip = NOT is_vip, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND whop_user_id = $2
+             RETURNING *`,
+            [subscriberId, whopUserId]
+        );
+        return result.rows[0];
+    } catch (error) {
+        console.error('Error toggling VIP status:', error);
+        throw error;
+    }
+};
 const deleteSubscriber = async (subscriberId, whopUserId) => {
     try {
         const result = await pool.query(
@@ -304,6 +320,31 @@ const bulkAddSubscribers = async (whopUserId, subscribersArray) => {
     }
 };
 
+const getVipSubscribers = async (whopUserId) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM subscribers WHERE whop_user_id = $1 AND status = $2 AND is_vip = true ORDER BY created_at DESC',
+            [whopUserId, 'active']
+        );
+        return result.rows;
+    } catch (error) {
+        console.error('Error getting VIP subscribers:', error);
+        throw error;
+    }
+};
+
+const getActiveSubscriberEmails = async (whopUserId) => {
+    try {
+        const result = await pool.query(
+            'SELECT email FROM subscribers WHERE whop_user_id = $1 AND status = $2 ORDER BY created_at DESC',
+            [whopUserId, 'active']
+        );
+        return result.rows.map(row => row.email);
+    } catch (error) {
+        console.error('Error getting active subscriber emails:', error);
+        throw error;
+    }
+};
 module.exports = {
     pool,
     initializeDatabase,
@@ -313,6 +354,9 @@ module.exports = {
     updateUser,
     // Subscriber operations
     getSubscribers,
+    getVipSubscribers,
+    getActiveSubscriberEmails,
+    toggleVipStatus,
     getSubscriberCount,
     addSubscriber,
     updateSubscriber,
