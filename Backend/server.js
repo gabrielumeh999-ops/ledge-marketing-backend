@@ -237,10 +237,40 @@ app.get('/api/user/:whopUserId/verify', async (req, res) => {
 
 // 2. Send email with plan enforcement
 app.post('/api/send-email', async (req, res) => {
-    const { whopUserId, campaignName, subject, html, to, type } = req.body;
+    const { whopUserId, campaignName, subject, html, to, type, recipientType, customEmails } = req.body;
     const emailType = type === 'transactional' ? 'transactional' : 'marketing';
-    const recipients = Array.isArray(to) ? to : [to];
+    
+    // Handle different recipient selection types
+    let recipients = [];
+    
+    if (recipientType === 'all') {
+        // Send to all active subscribers
+        recipients = await db.getActiveSubscriberEmails(whopUserId);
+    } else if (recipientType === 'vip') {
+        // Send to VIP subscribers only
+        const vipSubscribers = await db.getVipSubscribers(whopUserId);
+        recipients = vipSubscribers.map(sub => sub.email);
+    } else if (recipientType === 'custom' && customEmails) {
+        // Send to custom selected emails
+        recipients = Array.isArray(customEmails) ? customEmails : [customEmails];
+    } else if (to) {
+        // Fallback: manual email entry (legacy support)
+        recipients = Array.isArray(to) ? to : [to];
+    } else {
+        return res.status(400).json({
+            success: false,
+            message: 'No recipients specified'
+        });
+    }
+    
     const emailCount = recipients.length;
+    
+    if (emailCount === 0) {
+        return res.status(400).json({
+            success: false,
+            message: 'No recipients to send to'
+        });
+    }
 
     if (!whopUserId || whopUserId === 'undefined') {
         return res.status(400).json({ 
@@ -310,7 +340,7 @@ app.post('/api/send-email', async (req, res) => {
         if (resend) {
             try {
                 sendResult = await resend.emails.send({
-                    from: 'Ledge Marketing <no-reply@send.ledgemarketing.xyz>',
+                    from: 'Ledge Marketing <noreply@ledgemarketing.xyz>',
                     to: recipients,
                     subject: subject,
                     html: html,
@@ -636,6 +666,41 @@ app.delete('/api/subscribers/:id', async (req, res) => {
     }
 });
 
+app.put('/api/subscribers/:id/vip', async (req, res) => {
+    const { id } = req.params;
+    const { whopUserId } = req.body;
+
+    if (!whopUserId || whopUserId === 'undefined') {
+        return res.status(400).json({
+            success: false,
+            message: 'Valid user ID required'
+        });
+    }
+
+    try {
+        const subscriber = await db.toggleVipStatus(id, whopUserId);
+
+        if (!subscriber) {
+            return res.status(404).json({
+                success: false,
+                message: 'Subscriber not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: `Subscriber ${subscriber.is_vip ? 'marked as VIP' : 'removed from VIP'}`,
+            subscriber
+        });
+    } catch (error) {
+        console.error('❌ Toggle VIP error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error toggling VIP status',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
 app.post('/api/subscribers/bulk', async (req, res) => {
     const { whopUserId, subscribers } = req.body;
 
@@ -770,6 +835,27 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
                     name: data.user_username || ''
                 });
 
+                // Auto-add buyer as subscriber to seller's contact list
+                if (data.buyer_email && data.seller_id) {
+                    try {
+                        await db.addSubscriber(data.seller_id, {
+                            email: data.buyer_email,
+                            name: data.buyer_username || data.buyer_email.split('@')[0],
+                            status: 'active'
+                        });
+                        
+                        // Update seller's contact count
+                        const sellerContactCount = await db.getSubscriberCount(data.seller_id);
+                        await db.updateUser(data.seller_id, {
+                            contacts_count: sellerContactCount
+                        });
+                        
+                        console.log(`✅ Auto-added buyer ${data.buyer_email} to seller ${data.seller_id} contact list`);
+                    } catch (error) {
+                        console.error('⚠️  Failed to auto-add buyer as subscriber:', error);
+                        // Don't fail the webhook if subscriber add fails
+                    }
+                }
                 console.log(`✅ User ${userId} activated plan: ${planKey}`);
                 break;
 
@@ -900,3 +986,4 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Unhandled Rejection at:', promise);
     console.error('Reason:', reason);
 });
+
