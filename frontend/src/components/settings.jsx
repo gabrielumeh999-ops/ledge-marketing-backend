@@ -43,16 +43,6 @@ const Settings = () => {
       
       <div style={{ marginTop: '2rem' }}>
         <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem' }}>Email</label>
-          <input
-            type="email"
-            style={{ width: '100%', padding: '0.5rem' }}
-            value={form.email}
-            onChange={(e) => setForm({...form, email: e.target.value})}
-          />
-        </div>
-        
-        <div style={{ marginBottom: '1rem' }}>
           <label style={{ display: 'block', marginBottom: '0.5rem' }}>Account Email</label>
           <input
             type="email"
@@ -69,6 +59,17 @@ const Settings = () => {
           <small style={{ display: 'block', marginTop: '0.25rem', color: '#666', fontSize: '0.875rem' }}>
             Managed by Whop - cannot be changed
           </small>
+        </div>
+        
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem' }}>Display Name / Business Name</label>
+          <input
+            type="text"
+            style={{ width: '100%', padding: '0.5rem' }}
+            value={form.name}
+            onChange={(e) => setForm({...form, name: e.target.value})}
+            placeholder="John's Marketing Agency"
+          />
         </div>
         
         <div style={{ marginBottom: '1rem' }}>
@@ -102,3 +103,4 @@ const Settings = () => {
 
 
 export default Settings
+
