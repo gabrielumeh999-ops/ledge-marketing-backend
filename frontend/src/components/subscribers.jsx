@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useWhop } from '../context/WhopContext'
 import { subscriberAPI } from '../services/api'
 
@@ -13,6 +13,8 @@ const Subscribers = () => {
   const [newName, setNewName] = useState('')
   const [saving, setSaving] = useState(false)
   const [filterVip, setFilterVip] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const fileInputRef = useRef(null)
 
   useEffect(() => {
     loadSubscribers()
@@ -88,7 +90,7 @@ const Subscribers = () => {
         setNewEmail('')
         setNewName('')
         setShowAddModal(false)
-        loadSubscribers() // Reload the list
+        loadSubscribers()
       }
     } catch (error) {
       console.error('Error adding subscriber:', error)
@@ -109,7 +111,7 @@ const Subscribers = () => {
       
       if (response.data.success) {
         alert('Subscriber deleted successfully!')
-        loadSubscribers() // Reload the list
+        loadSubscribers()
       }
     } catch (error) {
       console.error('Error deleting subscriber:', error)
@@ -122,7 +124,7 @@ const Subscribers = () => {
       const response = await subscriberAPI.toggleVip(id, user.id)
 
       if (response.data.success) {
-        loadSubscribers() // Reload the list
+        loadSubscribers()
       }
     } catch (error) {
       console.error('Error toggling VIP:', error)
@@ -147,6 +149,130 @@ const Subscribers = () => {
     }
   }
 
+  const handleImportCSV = () => {
+    fileInputRef.current.click()
+  }
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    // Check file type
+    if (!file.name.endsWith('.csv')) {
+      alert('Please upload a CSV file')
+      return
+    }
+
+    setImporting(true)
+
+    try {
+      const text = await file.text()
+      const lines = text.split('\n').filter(line => line.trim())
+      
+      if (lines.length === 0) {
+        alert('CSV file is empty')
+        setImporting(false)
+        return
+      }
+
+      // Parse CSV - expecting format: email,name or just email
+      const subscribersToImport = []
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+      // Skip header row if it exists
+      const startIndex = lines[0].toLowerCase().includes('email') ? 1 : 0
+
+      for (let i = startIndex; i < lines.length; i++) {
+        const line = lines[i].trim()
+        if (!line) continue
+
+        const parts = line.split(',').map(p => p.trim().replace(/"/g, ''))
+        const email = parts[0]
+        const name = parts[1] || ''
+
+        // Validate email
+        if (emailRegex.test(email)) {
+          subscribersToImport.push({ email, name, status: 'active' })
+        }
+      }
+
+      if (subscribersToImport.length === 0) {
+        alert('No valid emails found in CSV file')
+        setImporting(false)
+        return
+      }
+
+      // Check plan limits
+      const limit = getContactLimit()
+      const availableSlots = limit - stats.total
+
+      if (subscribersToImport.length > availableSlots) {
+        alert(`Cannot import ${subscribersToImport.length} contacts. You have ${availableSlots} slots available.\n\nYour plan allows ${limit} contacts total and you currently have ${stats.total}.\n\nUpgrade your plan to import more contacts.`)
+        setImporting(false)
+        return
+      }
+
+      // Confirm import
+      if (!confirm(`Import ${subscribersToImport.length} subscribers?\n\nThis will use ${subscribersToImport.length} of your ${availableSlots} available contact slots.`)) {
+        setImporting(false)
+        return
+      }
+
+      // Send to backend
+      const response = await subscriberAPI.bulkImport({
+        whopUserId: user.id,
+        subscribers: subscribersToImport
+      })
+
+      if (response.data.success) {
+        alert(`✅ Successfully imported ${response.data.added} subscribers!\n${response.data.skipped > 0 ? `Skipped ${response.data.skipped} duplicates.` : ''}`)
+        loadSubscribers()
+      }
+
+    } catch (error) {
+      console.error('Error importing CSV:', error)
+      alert(error.response?.data?.message || 'Failed to import subscribers')
+    } finally {
+      setImporting(false)
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  const handleExportCSV = () => {
+    if (subscribers.length === 0) {
+      alert('No subscribers to export')
+      return
+    }
+
+    // Create CSV content
+    const csvContent = [
+      ['Email', 'Name', 'Status', 'VIP', 'Added Date'].join(','),
+      ...subscribers.map(sub => [
+        sub.email,
+        `"${sub.name || 'N/A'}"`,
+        sub.status,
+        sub.is_vip ? 'Yes' : 'No',
+        new Date(sub.created_at).toLocaleDateString()
+      ].join(','))
+    ].join('\n')
+
+    // Create download link
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    const url = URL.createObjectURL(blob)
+    
+    link.setAttribute('href', url)
+    link.setAttribute('download', `subscribers_${new Date().toISOString().split('T')[0]}.csv`)
+    link.style.visibility = 'hidden'
+    
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
   const contactLimit = getContactLimit()
   const slotsRemaining = contactLimit - stats.total
 
@@ -160,6 +286,15 @@ const Subscribers = () => {
 
   return (
     <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto' }}>
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv"
+        onChange={handleFileChange}
+        style={{ display: 'none' }}
+      />
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
         <div>
           <h1>Subscribers</h1>
@@ -205,7 +340,7 @@ const Subscribers = () => {
       </div>
 
       {/* Action Buttons */}
-      <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem' }}>
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap' }}>
         <button
           onClick={() => setFilterVip(!filterVip)}
           style={{
@@ -221,32 +356,48 @@ const Subscribers = () => {
           {filterVip ? '⭐ Showing VIP Only' : '☆ Show All'}
         </button>
         <button
-          onClick={() => alert('CSV import feature coming soon!')}
+          onClick={handleImportCSV}
+          disabled={importing || slotsRemaining <= 0}
           style={{
-            background: '#007bff',
+            background: (importing || slotsRemaining <= 0) ? '#ccc' : '#007bff',
             color: 'white',
             padding: '0.75rem 1.5rem',
             border: 'none',
             borderRadius: '4px',
-            cursor: 'pointer'
+            cursor: (importing || slotsRemaining <= 0) ? 'not-allowed' : 'pointer'
           }}
         >
-          Import CSV
+          {importing ? 'Importing...' : '📥 Import CSV'}
         </button>
         <button
-          onClick={() => alert('Export feature coming soon!')}
+          onClick={handleExportCSV}
+          disabled={subscribers.length === 0}
           style={{
-            background: 'transparent',
-            color: '#007bff',
+            background: subscribers.length === 0 ? '#ccc' : 'transparent',
+            color: subscribers.length === 0 ? '#666' : '#007bff',
             padding: '0.75rem 1.5rem',
-            border: '1px solid #007bff',
+            border: '1px solid ' + (subscribers.length === 0 ? '#ccc' : '#007bff'),
             borderRadius: '4px',
-            cursor: 'pointer'
+            cursor: subscribers.length === 0 ? 'not-allowed' : 'pointer'
           }}
         >
-          Export List
+          📤 Export CSV
         </button>
       </div>
+
+      {/* Help text for CSV import */}
+      {slotsRemaining > 0 && (
+        <div style={{ 
+          marginBottom: '1rem', 
+          padding: '0.75rem', 
+          background: '#e7f3ff', 
+          borderRadius: '4px',
+          fontSize: '0.875rem'
+        }}>
+          <strong>CSV Import Format:</strong> Your CSV should have columns: <code>email</code>, <code>name</code> (optional). 
+          You can import up to <strong>{slotsRemaining}</strong> more contacts.
+        </div>
+      )}
 
       {/* Subscribers Table */}
       <div style={{ background: 'white', borderRadius: '8px', overflow: 'hidden', border: '1px solid #ddd' }}>
@@ -266,7 +417,7 @@ const Subscribers = () => {
               <tr>
                 <td colSpan="6" style={{ padding: '3rem', textAlign: 'center', color: '#666' }}>
                   <p style={{ fontSize: '1.1rem', marginBottom: '1rem' }}>No subscribers yet</p>
-                  <p>Add your first subscriber to get started!</p>
+                  <p>Add your first subscriber or import from CSV!</p>
                 </td>
               </tr>
             ) : (
