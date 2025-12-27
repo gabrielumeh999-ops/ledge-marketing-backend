@@ -18,7 +18,46 @@ const Campaigns = () => {
   const [subscribers, setSubscribers] = useState([])
   const [subscriberCounts, setSubscriberCounts] = useState({ all: 0, vip: 0 })
   const [loadingSubscribers, setLoadingSubscribers] = useState(false)
+  useEffect(() => {
+    loadSubscribers()
+  }, [user.id])
 
+  const loadSubscribers = async () => {
+    try {
+      setLoadingSubscribers(true)
+      const response = await subscriberAPI.getAll(user.id)
+      
+      if (response.data.success) {
+        const subs = response.data.subscribers
+        setSubscribers(subs)
+        
+        // Calculate counts
+        const allCount = subs.filter(s => s.status === 'active').length
+        const vipCount = subs.filter(s => s.status === 'active' && s.is_vip === true).length
+        
+        setSubscriberCounts({ all: allCount, vip: vipCount })
+      }
+    } catch (error) {
+      console.error('Error loading subscribers:', error)
+    } finally {
+      setLoadingSubscribers(false)
+    }
+  }
+
+  const getRecipientCount = () => {
+    if (form.recipientType === 'all') return subscriberCounts.all
+    if (form.recipientType === 'vip') return subscriberCounts.vip
+    if (form.recipientType === 'custom') return form.selectedEmails.length
+    return 0
+  }
+
+  const handleEmailSelection = (email, isChecked) => {
+    if (isChecked) {
+      setForm({...form, selectedEmails: [...form.selectedEmails, email]})
+    } else {
+      setForm({...form, selectedEmails: form.selectedEmails.filter(e => e !== email)})
+    }
+  }
   const handleSubmit = async (e) => {
     e.preventDefault()
     setLoading(true)
@@ -281,3 +320,4 @@ const Campaigns = () => {
 
 
 export default Campaigns
+
