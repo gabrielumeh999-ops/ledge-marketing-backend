@@ -6,7 +6,6 @@ const pool = new Pool({
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// Test database connection
 pool.on('connect', () => {
     console.log('✅ Connected to PostgreSQL database');
 });
@@ -16,17 +15,17 @@ pool.on('error', (err) => {
 });
 
 // ===== DATABASE INITIALIZATION =====
-
 const initializeDatabase = async () => {
     try {
         console.log('🔧 Initializing database tables...');
 
-        // Create users table
+        // ✅ FIXED: Added username column to users table
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 whop_user_id VARCHAR(255) PRIMARY KEY,
                 email VARCHAR(255),
                 name VARCHAR(255),
+                username VARCHAR(255),
                 plan VARCHAR(50) DEFAULT 'free',
                 contacts_count INTEGER DEFAULT 0,
                 daily_marketing_sent INTEGER DEFAULT 0,
@@ -40,7 +39,19 @@ const initializeDatabase = async () => {
             )
         `);
 
-        // Create subscribers table
+        // Add username column if it doesn't exist (for existing databases)
+        await pool.query(`
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name='users' AND column_name='username'
+                ) THEN
+                    ALTER TABLE users ADD COLUMN username VARCHAR(255);
+                END IF;
+            END $$;
+        `);
+
         await pool.query(`
             CREATE TABLE IF NOT EXISTS subscribers (
                 id SERIAL PRIMARY KEY,
@@ -56,7 +67,6 @@ const initializeDatabase = async () => {
             )
         `);
 
-        // Create index for faster lookups
         await pool.query(`
             CREATE INDEX IF NOT EXISTS idx_subscribers_user_id 
             ON subscribers(whop_user_id)
@@ -79,7 +89,6 @@ const getUser = async (whopUserId) => {
         );
         
         if (result.rows.length === 0) {
-            // Create new user with defaults
             return await createUser(whopUserId);
         }
         
@@ -94,12 +103,13 @@ const createUser = async (whopUserId, data = {}) => {
     try {
         const result = await pool.query(
             `INSERT INTO users (
-                whop_user_id, email, name, plan
-            ) VALUES ($1, $2, $3, $4)
+                whop_user_id, email, name, username, plan
+            ) VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (whop_user_id) 
             DO UPDATE SET 
                 email = EXCLUDED.email,
                 name = EXCLUDED.name,
+                username = EXCLUDED.username,
                 plan = EXCLUDED.plan,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING *`,
@@ -107,6 +117,7 @@ const createUser = async (whopUserId, data = {}) => {
                 whopUserId,
                 data.email || '',
                 data.name || '',
+                data.username || '',
                 data.plan || 'free'
             ]
         );
@@ -124,7 +135,6 @@ const updateUser = async (whopUserId, data) => {
         const values = [];
         let paramCounter = 1;
 
-        // Build dynamic UPDATE query
         Object.keys(data).forEach(key => {
             fields.push(`${key} = $${paramCounter}`);
             values.push(data[key]);
@@ -156,16 +166,13 @@ const getSubscribers = async (whopUserId, options = {}) => {
         let query = 'SELECT * FROM subscribers WHERE whop_user_id = $1';
         const values = [whopUserId];
 
-        // Add status filter if provided
         if (options.status) {
             query += ' AND status = $2';
             values.push(options.status);
         }
 
-        // Add ordering
         query += ' ORDER BY created_at DESC';
 
-        // Add pagination if provided
         if (options.limit) {
             query += ` LIMIT $${values.length + 1}`;
             values.push(options.limit);
@@ -272,6 +279,7 @@ const toggleVipStatus = async (subscriberId, whopUserId) => {
         throw error;
     }
 };
+
 const deleteSubscriber = async (subscriberId, whopUserId) => {
     try {
         const result = await pool.query(
@@ -345,14 +353,13 @@ const getActiveSubscriberEmails = async (whopUserId) => {
         throw error;
     }
 };
+
 module.exports = {
     pool,
     initializeDatabase,
-    // User operations
     getUser,
     createUser,
     updateUser,
-    // Subscriber operations
     getSubscribers,
     getVipSubscribers,
     getActiveSubscriberEmails,
