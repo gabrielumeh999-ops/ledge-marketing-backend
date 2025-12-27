@@ -207,7 +207,7 @@ app.get('/api/user/:whopUserId/verify', async (req, res) => {
                 plan: user.plan,
                 planName: plan.name,
                 email: user.email || '',
-                name: user.name || '',
+                name: user.name || user.username || '', // ✅ FIXED: Include username
                 contacts_count: user.contacts_count || 0,
                 daily_marketing_sent: user.daily_marketing_sent || 0,
                 monthly_marketing_sent: user.monthly_marketing_sent || 0,
@@ -244,17 +244,13 @@ app.post('/api/send-email', async (req, res) => {
     let recipients = [];
     
     if (recipientType === 'all') {
-        // Send to all active subscribers
         recipients = await db.getActiveSubscriberEmails(whopUserId);
     } else if (recipientType === 'vip') {
-        // Send to VIP subscribers only
         const vipSubscribers = await db.getVipSubscribers(whopUserId);
         recipients = vipSubscribers.map(sub => sub.email);
     } else if (recipientType === 'custom' && customEmails) {
-        // Send to custom selected emails
         recipients = Array.isArray(customEmails) ? customEmails : [customEmails];
     } else if (to) {
-        // Fallback: manual email entry (legacy support)
         recipients = Array.isArray(to) ? to : [to];
     } else {
         return res.status(400).json({
@@ -701,6 +697,7 @@ app.put('/api/subscribers/:id/vip', async (req, res) => {
         });
     }
 });
+
 app.post('/api/subscribers/bulk', async (req, res) => {
     const { whopUserId, subscribers } = req.body;
 
@@ -755,7 +752,7 @@ app.post('/api/subscribers/bulk', async (req, res) => {
     }
 });
 
-// ===== WHOP WEBHOOK HANDLER =====
+// ===== WHOP WEBHOOK HANDLER - ✅ FIXED =====
 app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async (req, res) => {
     const signature = req.headers['whop-signature'];
     const body = req.body.toString('utf8');
@@ -803,6 +800,7 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
     }
 
     console.log(`📩 Whop webhook received: ${event.type}`);
+    console.log('📦 Webhook data:', JSON.stringify(event.data, null, 2));
 
     try {
         const { type, data } = event;
@@ -822,7 +820,8 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
                 const planKey = getPlanFromWhopId(whopPlanId);
                 const userId = data.user_id;
 
-                await db.updateUser(userId, {
+                // ✅ FIXED: Capture username from webhook
+                const userUpdates = {
                     plan: planKey,
                     daily_marketing_sent: 0,
                     monthly_marketing_sent: 0,
@@ -831,9 +830,14 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
                     contacts_count: 0,
                     last_daily_reset: moment.utc().format('YYYY-MM-DD'),
                     last_monthly_reset: moment.utc().format('YYYY-MM'),
-                    email: data.user_email || '',
-                    name: data.user_username || ''
-                });
+                    email: data.user_email || data.email || '',
+                    name: data.user_username || data.username || data.user_name || data.name || '',
+                    username: data.user_username || data.username || '' // ✅ NEW: Store username separately
+                };
+
+                console.log('✅ Updating user with data:', userUpdates);
+
+                await db.updateUser(userId, userUpdates);
 
                 // Auto-add buyer as subscriber to seller's contact list
                 if (data.buyer_email && data.seller_id) {
@@ -844,7 +848,6 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
                             status: 'active'
                         });
                         
-                        // Update seller's contact count
                         const sellerContactCount = await db.getSubscriberCount(data.seller_id);
                         await db.updateUser(data.seller_id, {
                             contacts_count: sellerContactCount
@@ -853,10 +856,9 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
                         console.log(`✅ Auto-added buyer ${data.buyer_email} to seller ${data.seller_id} contact list`);
                     } catch (error) {
                         console.error('⚠️  Failed to auto-add buyer as subscriber:', error);
-                        // Don't fail the webhook if subscriber add fails
                     }
                 }
-                console.log(`✅ User ${userId} activated plan: ${planKey}`);
+                console.log(`✅ User ${userId} activated plan: ${planKey} with username: ${userUpdates.username}`);
                 break;
 
             case 'membership.deactivated':
@@ -958,7 +960,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     }
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('📴 SIGTERM received, shutting down gracefully...');
     server.close(() => {
@@ -975,7 +976,6 @@ process.on('SIGINT', () => {
     });
 });
 
-// Handle uncaught exceptions
 process.on('uncaughtException', (err) => {
     console.error('❌ Uncaught Exception:', err);
     console.error(err.stack);
@@ -986,4 +986,3 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Unhandled Rejection at:', promise);
     console.error('Reason:', reason);
 });
-
