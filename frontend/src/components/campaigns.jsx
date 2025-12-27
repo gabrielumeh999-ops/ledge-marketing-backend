@@ -18,6 +18,7 @@ const Campaigns = () => {
   const [subscribers, setSubscribers] = useState([])
   const [subscriberCounts, setSubscriberCounts] = useState({ all: 0, vip: 0 })
   const [loadingSubscribers, setLoadingSubscribers] = useState(false)
+
   useEffect(() => {
     loadSubscribers()
   }, [user.id])
@@ -58,6 +59,7 @@ const Campaigns = () => {
       setForm({...form, selectedEmails: form.selectedEmails.filter(e => e !== email)})
     }
   }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     setLoading(true)
@@ -94,34 +96,6 @@ const Campaigns = () => {
           recipients: '',
           recipientType: 'all',
           selectedEmails: [],
-          type: 'marketing'
-        })
-      } else {
-        setResult({ success: false, message: response.data.message })
-      }
-    } catch (error) {
-      setResult({ success: false, message: error.response?.data?.message || 'Failed to send campaign' })
-    } finally {
-      setLoading(false)
-    }
-  }
-      
-      const response = await campaignAPI.send({
-        whopUserId: user.id,
-        campaignName: form.campaignName,
-        subject: form.subject,
-        html: form.html,
-        to: recipients,
-        type: form.type
-      })
-
-      if (response.data.success) {
-        setResult({ success: true, message: response.data.message })
-        setForm({
-          campaignName: '',
-          subject: '',
-          html: '<h1>Hello!</h1><p>Your email content here.</p>',
-          recipients: '',
           type: 'marketing'
         })
       } else {
@@ -318,6 +292,4 @@ const Campaigns = () => {
   )
 }
 
-
 export default Campaigns
-
