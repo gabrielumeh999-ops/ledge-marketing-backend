@@ -6,14 +6,12 @@ const crypto = require('crypto');
 const path = require('path');
 const db = require('./database');
 
-// Load environment variables
 dotenv.config({ path: path.join(__dirname, '../.env') });
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ===== ENVIRONMENT VALIDATION =====
 console.log('🔧 Environment Check:');
 console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
 console.log('- PORT:', PORT);
@@ -22,7 +20,6 @@ console.log('- FRONTEND_URL:', process.env.FRONTEND_URL);
 console.log('- DATABASE_URL:', process.env.DATABASE_URL ? '✓ Set' : '✗ Missing');
 console.log('- RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✓ Set' : '✗ Missing');
 
-// Initialize Resend only if enabled and key exists
 let resend = null;
 let Resend = null;
 
@@ -43,7 +40,6 @@ if (process.env.EMAIL_ENABLED === 'true') {
     console.log('📧 Email sending disabled (demo mode)');
 }
 
-// ===== CORS CONFIGURATION =====
 const allowedOrigins = [
     'http://localhost:3000',
     'http://localhost:5173',
@@ -71,12 +67,11 @@ app.use(cors({
 app.use(express.json());
 app.options('*', cors());
 
-// ===== INITIALIZE DATABASE =====
 db.initializeDatabase().catch(err => {
     console.error('Failed to initialize database:', err);
 });
 
-// ===== PLANS CONFIGURATION =====
+// ===== ORIGINAL PLANS CONFIGURATION (NO CHANGES) =====
 const PLANS = {
     'free': {
         name: 'Free Plan',
@@ -116,7 +111,6 @@ const PLANS = {
     },
 };
 
-// ===== USAGE RESET LOGIC =====
 const checkAndResetUsage = (user) => {
     if (!user) return { updated: false, updates: {} };
 
@@ -152,8 +146,6 @@ const getPlanFromWhopId = (whopPlanId) => {
     return Object.keys(PLANS).find(key => PLANS[key].whop_plan_id === whopPlanId) || 'free';
 };
 
-// ===== API ROUTES =====
-
 app.get('/', (req, res) => {
     res.json({
         service: 'Ledge Marketing API',
@@ -172,7 +164,7 @@ app.get('/', (req, res) => {
     });
 });
 
-// 1. Verify user and get usage data
+// ===== ✅ UPDATED: NOW INCLUDES REMAINING COUNTS FOR EMAIL COUNTER =====
 app.get('/api/user/:whopUserId/verify', async (req, res) => {
     const { whopUserId } = req.params;
 
@@ -200,6 +192,13 @@ app.get('/api/user/:whopUserId/verify', async (req, res) => {
 
         const plan = PLANS[user.plan] || PLANS.free;
 
+        // ✅ NEW: Calculate remaining counts for email counter
+        const dailyMarketingRemaining = plan.marketing_emails.daily - (user.daily_marketing_sent || 0);
+        const monthlyMarketingRemaining = plan.marketing_emails.monthly - (user.monthly_marketing_sent || 0);
+        const dailyTransactionalRemaining = plan.transactional_emails.daily - (user.daily_transactional_sent || 0);
+        const monthlyTransactionalRemaining = plan.transactional_emails.monthly - (user.monthly_transactional_sent || 0);
+        const contactsRemaining = plan.contact_limit - (user.contacts_count || 0);
+
         const response = {
             success: true,
             user: {
@@ -207,19 +206,30 @@ app.get('/api/user/:whopUserId/verify', async (req, res) => {
                 plan: user.plan,
                 planName: plan.name,
                 email: user.email || '',
-                name: user.name || user.username || '', // ✅ FIXED: Include username
+                name: user.name || user.username || '',
+                
+                // Current usage
                 contacts_count: user.contacts_count || 0,
                 daily_marketing_sent: user.daily_marketing_sent || 0,
                 monthly_marketing_sent: user.monthly_marketing_sent || 0,
                 daily_transactional_sent: user.daily_transactional_sent || 0,
                 monthly_transactional_sent: user.monthly_transactional_sent || 0,
+                
+                // Limits
                 contact_limit: plan.contact_limit,
                 marketing_limit_monthly: plan.marketing_emails.monthly,
                 marketing_limit_daily: plan.marketing_emails.daily,
                 transactional_limit_monthly: plan.transactional_emails.monthly,
                 transactional_limit_daily: plan.transactional_emails.daily,
                 transactional_enabled: plan.transactional_emails.enabled,
-                analytics_enabled: plan.analytics_enabled
+                analytics_enabled: plan.analytics_enabled,
+                
+                // ✅ NEW: Remaining counts for email counter
+                daily_marketing_remaining: dailyMarketingRemaining,
+                monthly_marketing_remaining: monthlyMarketingRemaining,
+                daily_transactional_remaining: dailyTransactionalRemaining,
+                monthly_transactional_remaining: monthlyTransactionalRemaining,
+                contacts_remaining: contactsRemaining
             }
         };
 
@@ -235,12 +245,10 @@ app.get('/api/user/:whopUserId/verify', async (req, res) => {
     }
 });
 
-// 2. Send email with plan enforcement
 app.post('/api/send-email', async (req, res) => {
     const { whopUserId, campaignName, subject, html, to, type, recipientType, customEmails } = req.body;
     const emailType = type === 'transactional' ? 'transactional' : 'marketing';
     
-    // Handle different recipient selection types
     let recipients = [];
     
     if (recipientType === 'all') {
@@ -390,7 +398,6 @@ app.post('/api/send-email', async (req, res) => {
     }
 });
 
-// 3. Get analytics (Pro plan only)
 app.get('/api/analytics', async (req, res) => {
     const { whopUserId } = req.query;
 
@@ -449,7 +456,6 @@ app.get('/api/analytics', async (req, res) => {
     }
 });
 
-// 4. Update user profile
 app.post('/api/user/update', async (req, res) => {
     const { whopUserId, email, name } = req.body;
 
@@ -481,8 +487,6 @@ app.post('/api/user/update', async (req, res) => {
         });
     }
 });
-
-// ===== SUBSCRIBER ENDPOINTS =====
 
 app.get('/api/subscribers', async (req, res) => {
     const { whopUserId } = req.query;
@@ -752,7 +756,6 @@ app.post('/api/subscribers/bulk', async (req, res) => {
     }
 });
 
-// ===== WHOP WEBHOOK HANDLER - ✅ FIXED =====
 app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async (req, res) => {
     const signature = req.headers['whop-signature'];
     const body = req.body.toString('utf8');
@@ -820,7 +823,6 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
                 const planKey = getPlanFromWhopId(whopPlanId);
                 const userId = data.user_id;
 
-                // ✅ FIXED: Capture username from webhook
                 const userUpdates = {
                     plan: planKey,
                     daily_marketing_sent: 0,
@@ -832,14 +834,13 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
                     last_monthly_reset: moment.utc().format('YYYY-MM'),
                     email: data.user_email || data.email || '',
                     name: data.user_username || data.username || data.user_name || data.name || '',
-                    username: data.user_username || data.username || '' // ✅ NEW: Store username separately
+                    username: data.user_username || data.username || ''
                 };
 
                 console.log('✅ Updating user with data:', userUpdates);
 
                 await db.updateUser(userId, userUpdates);
 
-                // Auto-add buyer as subscriber to seller's contact list
                 if (data.buyer_email && data.seller_id) {
                     try {
                         await db.addSubscriber(data.seller_id, {
@@ -895,7 +896,6 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
     }
 });
 
-// ===== HEALTH CHECK =====
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
@@ -925,7 +925,6 @@ app.use('/api/*', (req, res) => {
     });
 });
 
-// ===== ERROR HANDLING =====
 app.use((err, req, res, next) => {
     console.error('❌ Unhandled error:', err);
     res.status(500).json({
@@ -935,7 +934,6 @@ app.use((err, req, res, next) => {
     });
 });
 
-// ===== START SERVER =====
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('');
     console.log('═══════════════════════════════════════════════');
