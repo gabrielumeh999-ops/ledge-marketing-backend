@@ -756,93 +756,7 @@ app.post('/api/subscribers/bulk', async (req, res) => {
     }
 });
 
-app.post('/api/webhooks/whop', async (req, res) => {
-    const signature = req.headers['whop-signature'];
-    const secret = process.env.WHOP_WEBHOOK_SECRET;
-
-    console.log(`📩 Whop webhook received`);
-    console.log('📦 Webhook body:', JSON.stringify(req.body, null, 2));
-
-    try {
-        const { type, data } = req.body;
-
-        if (!data || !data.user_id) {
-            console.warn('⚠️  Webhook missing user_id');
-            return res.status(400).json({
-                success: false,
-                message: 'Missing user_id in webhook data'
-            });
-        }
-
-        switch (type) {
-            case 'membership.activated':
-            case 'invoice.paid':
-                const whopPlanId = data.plan_id;
-                const planKey = getPlanFromWhopId(whopPlanId);
-                const userId = data.user_id;
-
-                const userUpdates = {
-                    plan: planKey,
-                    daily_marketing_sent: 0,
-                    monthly_marketing_sent: 0,
-                    daily_transactional_sent: 0,
-                    monthly_transactional_sent: 0,
-                    contacts_count: 0,
-                    last_daily_reset: moment.utc().format('YYYY-MM-DD'),
-                    last_monthly_reset: moment.utc().format('YYYY-MM'),
-                    email: data.user_email || data.email || '',
-                    name: data.user_username || data.username || data.user_name || data.name || '',
-                    username: data.user_username || data.username || ''
-                };
-
-                console.log('✅ Updating user with data:', userUpdates);
-                await db.updateUser(userId, userUpdates);
-
-                if (data.buyer_email && data.seller_id) {
-                    try {
-                        await db.addSubscriber(data.seller_id, {
-                            email: data.buyer_email,
-                            name: data.buyer_username || data.buyer_email.split('@')[0],
-                            status: 'active'
-                        });
-                        
-                        const sellerContactCount = await db.getSubscriberCount(data.seller_id);
-                        await db.updateUser(data.seller_id, {
-                            contacts_count: sellerContactCount
-                        });
-                        
-                        console.log(`✅ Auto-added buyer to seller contact list`);
-                    } catch (error) {
-                        console.error('⚠️  Failed to auto-add buyer:', error);
-                    }
-                }
-                console.log(`✅ User ${userId} activated plan: ${planKey}`);
-                break;
-
-            case 'membership.deactivated':
-            case 'invoice.past_due':
-                await db.updateUser(data.user_id, { plan: 'free' });
-                console.log(`⚠️  User ${data.user_id} downgraded to free`);
-                break;
-
-            default:
-                console.log(`ℹ️  Unhandled webhook type: ${type}`);
-        }
-
-        res.json({ 
-            success: true, 
-            message: 'Webhook processed' 
-        });
-
-    } catch (error) {
-        console.error('❌ Webhook processing error:', error);
-        res.json({ 
-            success: false, 
-            message: 'Webhook processing failed',
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
-    }
-});
+app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async (req, res) => {
     const signature = req.headers['whop-signature'];
     const body = req.body.toString('utf8');
     const secret = process.env.WHOP_WEBHOOK_SECRET;
@@ -1070,5 +984,6 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Unhandled Rejection at:', promise);
     console.error('Reason:', reason);
 });
+
 
 
