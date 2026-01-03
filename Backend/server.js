@@ -761,7 +761,7 @@ app.post('/api/webhooks/whop', express.raw({ type: 'application/json' }), async 
     const body = req.body.toString('utf8');
     const secret = process.env.WHOP_WEBHOOK_SECRET;
 
-    if (process.env.NODE_ENV === 'production' && secret) {
+    if (process.env.NODE_ENV === 'production' && secret && signature) {
         if (!signature) {
             console.warn('⚠️  Webhook received without signature');
             return res.status(401).json({ 
@@ -984,3 +984,4 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Unhandled Rejection at:', promise);
     console.error('Reason:', reason);
 });
+
